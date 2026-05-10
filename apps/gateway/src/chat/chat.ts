@@ -82,7 +82,7 @@ import {
 	checkGuardrails,
 	logViolation,
 } from "@llmgateway/guardrails";
-import { logger } from "@llmgateway/logger";
+import { logger, toError } from "@llmgateway/logger";
 import {
 	type BaseMessage,
 	getModelStreamingSupport,
@@ -7167,41 +7167,37 @@ chat.openapi(completions, async (c) => {
 							phase: "upstream_read",
 						});
 
-						logger.error(
-							"Error reading upstream stream",
-							error instanceof Error ? error : new Error(String(error)),
-							{
-								requestId,
+						logger.error("Error reading upstream stream", toError(error), {
+							requestId,
+							usedProvider,
+							requestedProvider,
+							usedModel,
+							initialRequestedModel,
+							upstreamStatus: res?.status ?? null,
+							upstreamStatusText: res?.statusText ?? null,
+							upstreamHeaders: res
+								? {
+										contentType: res.headers.get("content-type"),
+										contentLength: res.headers.get("content-length"),
+										transferEncoding: res.headers.get("transfer-encoding"),
+										requestId:
+											res.headers.get("x-request-id") ??
+											res.headers.get("request-id") ??
+											res.headers.get("openai-request-id"),
+									}
+								: null,
+							streamingDiagnostics: normalizedStreamingError.log.details,
+							timeToFirstToken,
+							timeToFirstReasoningToken,
+							firstTokenReceived,
+							firstReasoningTokenReceived,
+							unifiedFinishReason: getUnifiedFinishReason(
+								normalizedStreamingError.client.type === "gateway_error"
+									? "gateway_error"
+									: "upstream_error",
 								usedProvider,
-								requestedProvider,
-								usedModel,
-								initialRequestedModel,
-								upstreamStatus: res?.status ?? null,
-								upstreamStatusText: res?.statusText ?? null,
-								upstreamHeaders: res
-									? {
-											contentType: res.headers.get("content-type"),
-											contentLength: res.headers.get("content-length"),
-											transferEncoding: res.headers.get("transfer-encoding"),
-											requestId:
-												res.headers.get("x-request-id") ??
-												res.headers.get("request-id") ??
-												res.headers.get("openai-request-id"),
-										}
-									: null,
-								streamingDiagnostics: normalizedStreamingError.log.details,
-								timeToFirstToken,
-								timeToFirstReasoningToken,
-								firstTokenReceived,
-								firstReasoningTokenReceived,
-								unifiedFinishReason: getUnifiedFinishReason(
-									normalizedStreamingError.client.type === "gateway_error"
-										? "gateway_error"
-										: "upstream_error",
-									usedProvider,
-								),
-							},
-						);
+							),
+						});
 
 						// Forward the error to the client with the buffered content that caused the error
 						try {
@@ -7480,7 +7476,7 @@ chat.openapi(completions, async (c) => {
 							} catch (error) {
 								logger.error(
 									"Error sending synthesized finish chunk",
-									error instanceof Error ? error : new Error(String(error)),
+									toError(error),
 								);
 							}
 						}
@@ -7647,10 +7643,7 @@ chat.openapi(completions, async (c) => {
 								id: String(eventId++),
 							});
 						} catch (error) {
-							logger.error(
-								"Error sending final usage chunk",
-								error instanceof Error ? error : new Error(String(error)),
-							);
+							logger.error("Error sending final usage chunk", toError(error));
 						}
 
 						// Send healed content if buffering was enabled
@@ -7728,7 +7721,7 @@ chat.openapi(completions, async (c) => {
 							} catch (error) {
 								logger.error(
 									"Error sending healed content chunk",
-									error instanceof Error ? error : new Error(String(error)),
+									toError(error),
 								);
 							}
 						}
@@ -7765,7 +7758,7 @@ chat.openapi(completions, async (c) => {
 							} catch (error) {
 								logger.error(
 									"Error sending routing metadata chunk",
-									error instanceof Error ? error : new Error(String(error)),
+									toError(error),
 								);
 							}
 						}
@@ -7779,10 +7772,7 @@ chat.openapi(completions, async (c) => {
 									id: String(eventId++),
 								});
 							} catch (error) {
-								logger.error(
-									"Error sending [DONE] event",
-									error instanceof Error ? error : new Error(String(error)),
-								);
+								logger.error("Error sending [DONE] event", toError(error));
 							}
 						}
 					}
@@ -8090,10 +8080,7 @@ chat.openapi(completions, async (c) => {
 								cacheDuration,
 							);
 						} catch (error) {
-							logger.error(
-								"Error saving streaming cache",
-								error instanceof Error ? error : new Error(String(error)),
-							);
+							logger.error("Error saving streaming cache", toError(error));
 						}
 					}
 				}
