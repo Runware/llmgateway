@@ -1,5 +1,6 @@
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
+import Stripe from "stripe";
 import { z } from "zod";
 
 import { deleteResendContact } from "@/auth/config.js";
@@ -31,6 +32,7 @@ import {
 	modelProviderMappingHistory,
 	modelHistory,
 } from "@llmgateway/db";
+import { logger } from "@llmgateway/logger";
 import { models, providers } from "@llmgateway/models";
 import { DEV_PLAN_PRICES } from "@llmgateway/shared";
 import {
@@ -4764,16 +4766,35 @@ admin.openapi(blockOrganizationRoute, async (c) => {
 		org.devPlanStripeSubscriptionId,
 	].filter((id): id is string => Boolean(id));
 
-	// Cancel every Stripe subscription before mutating local state. If any
-	// cancel call fails, the error propagates to the global handler and we
-	// leave the org untouched so the admin can retry once Stripe is healthy.
+	// Cancel every Stripe subscription before mutating local state. Treat
+	// already-cancelled or missing subscriptions as success (their terminal
+	// state matches what we want anyway); re-throw other Stripe errors so the
+	// admin can retry once Stripe is healthy.
+	const cancelledSubscriptionIds: string[] = [];
 	for (const subscriptionId of subscriptionIds) {
-		await getStripe().subscriptions.cancel(subscriptionId, {
-			invoice_now: false,
-			prorate: false,
-		});
+		try {
+			await getStripe().subscriptions.cancel(subscriptionId, {
+				invoice_now: false,
+				prorate: false,
+			});
+			cancelledSubscriptionIds.push(subscriptionId);
+		} catch (error) {
+			if (
+				error instanceof Stripe.errors.StripeInvalidRequestError &&
+				(error.code === "resource_missing" ||
+					error.statusCode === 404 ||
+					error.message.includes("already been canceled") ||
+					error.message.includes("already canceled"))
+			) {
+				logger.info(
+					`Stripe subscription ${subscriptionId} already terminal, skipping cancel: ${error.message}`,
+				);
+				cancelledSubscriptionIds.push(subscriptionId);
+				continue;
+			}
+			throw error;
+		}
 	}
-	const cancelledSubscriptionIds = subscriptionIds;
 
 	const memberLinks = await db.query.userOrganization.findMany({
 		where: { organizationId: { eq: orgId } },
