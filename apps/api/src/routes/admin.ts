@@ -4579,16 +4579,6 @@ const setOrganizationStatusRoute = createRoute({
 			},
 			description: "Organization status updated.",
 		},
-		403: {
-			content: {
-				"application/json": {
-					schema: z.object({
-						message: z.string(),
-					}),
-				},
-			},
-			description: "Personal organizations cannot be disabled.",
-		},
 		404: {
 			content: {
 				"application/json": {
@@ -4613,12 +4603,6 @@ admin.openapi(setOrganizationStatusRoute, async (c) => {
 
 	if (!org) {
 		throw new HTTPException(404, { message: "Organization not found" });
-	}
-
-	if (status === "deleted" && org.isPersonal) {
-		throw new HTTPException(403, {
-			message: "Personal organizations cannot be disabled.",
-		});
 	}
 
 	const memberLinks = await db.query.userOrganization.findMany({

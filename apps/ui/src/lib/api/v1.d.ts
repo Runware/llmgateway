@@ -3379,17 +3379,6 @@ export interface paths {
                         };
                     };
                 };
-                /** @description Personal organizations cannot be disabled. */
-                403: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json": {
-                            message: string;
-                        };
-                    };
-                };
                 /** @description Organization not found. */
                 404: {
                     headers: {
