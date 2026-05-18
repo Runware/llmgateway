@@ -16,6 +16,11 @@ import { SidebarProvider } from "@/components/ui/sidebar";
 import { useUser } from "@/hooks/useUser";
 import { getModelImageConfig } from "@/lib/image-gen";
 import { mapModels } from "@/lib/mapmodels";
+import {
+	getModelPreferenceCookie,
+	IMAGE_MODEL_COOKIE,
+	setModelPreferenceCookie,
+} from "@/lib/model-preferences";
 import { shouldDisableFallback } from "@/lib/no-fallback";
 
 import type { ApiModel, ApiProvider } from "@/lib/fetch-models";
@@ -29,6 +34,7 @@ interface ImagePageClientProps {
 	selectedOrganization: Organization | null;
 	projects: Project[];
 	selectedProject: Project | null;
+	initialModelPreference?: string | null;
 }
 
 export default function ImagePageClient({
@@ -38,6 +44,7 @@ export default function ImagePageClient({
 	selectedOrganization,
 	projects: _projects,
 	selectedProject,
+	initialModelPreference,
 }: ImagePageClientProps) {
 	const { user, isLoading: isUserLoading } = useUser();
 	const posthog = usePostHog();
@@ -76,9 +83,7 @@ export default function ImagePageClient({
 	);
 	const [availableModels] = useState<ComboboxModel[]>(mapped);
 
-	const IMAGE_MODEL_KEY = "llmgateway_model_image";
-
-	// State — initialize from URL params, then localStorage, then default
+	// State — initialize from URL params, then cookie, then default
 	const [selectedModels, setSelectedModels] = useState<string[]>(() => {
 		const modelParam = searchParams.get("model");
 		if (modelParam) {
@@ -87,16 +92,13 @@ export default function ImagePageClient({
 				return models;
 			}
 		}
-		try {
-			const stored = localStorage.getItem(IMAGE_MODEL_KEY);
-			if (stored) {
-				const models = stored.split(",").filter(Boolean);
-				if (models.length > 0) {
-					return models;
-				}
+		const stored =
+			getModelPreferenceCookie(IMAGE_MODEL_COOKIE) ?? initialModelPreference;
+		if (stored) {
+			const models = stored.split(",").filter(Boolean);
+			if (models.length > 0) {
+				return models;
 			}
-		} catch {
-			// ignore private-mode / quota errors
 		}
 		const first = imageGenModels[0];
 		return first ? [first.id] : [];
@@ -174,16 +176,19 @@ export default function ImagePageClient({
 			if (!selectedOrganization) {
 				return;
 			}
-			if (ensuredProjectRef.current === selectedProject.id) {
+			const projectId = selectedProject.id;
+			if (ensuredProjectRef.current === projectId) {
 				return;
 			}
 			try {
-				await fetch("/api/ensure-playground-key", {
+				const response = await fetch("/api/ensure-playground-key", {
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ projectId: selectedProject.id }),
+					body: JSON.stringify({ projectId }),
 				});
-				ensuredProjectRef.current = selectedProject.id;
+				if (response.ok && selectedProject.id === projectId) {
+					ensuredProjectRef.current = projectId;
+				}
 			} catch {
 				// ignore
 			}
@@ -220,11 +225,7 @@ export default function ImagePageClient({
 
 	useEffect(() => {
 		if (selectedModels.length > 0) {
-			try {
-				localStorage.setItem(IMAGE_MODEL_KEY, selectedModels.join(","));
-			} catch {
-				// ignore private-mode / quota errors
-			}
+			setModelPreferenceCookie(IMAGE_MODEL_COOKIE, selectedModels.join(","));
 		}
 	}, [selectedModels]);
 
