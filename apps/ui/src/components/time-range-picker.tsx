@@ -2,6 +2,7 @@
 
 import { Lock } from "lucide-react";
 
+import { useDashboardNavigation } from "@/hooks/useDashboardNavigation";
 import {
 	Tooltip,
 	TooltipContent,
@@ -37,7 +38,9 @@ export function TimeRangePicker({
 	allowedValues,
 }: TimeRangePickerProps) {
 	const config = useAppConfig();
-	const isGated = config.hosted;
+	const { selectedOrganization } = useDashboardNavigation();
+	const isEnterprise = selectedOrganization?.plan === "enterprise";
+	const isGated = config.hosted && !isEnterprise;
 
 	const freeRanges = allowedValues
 		? FREE_RANGES.filter((r) => allowedValues.includes(r.value))
