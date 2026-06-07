@@ -191,6 +191,10 @@ export const organization = pgTable(
 		paymentFailureStartedAt: timestamp(),
 		// Dev Plans fields (for personal accounts)
 		isPersonal: boolean().notNull().default(false),
+		// Marks the dedicated per-user "Chat" org that backs chat.llmgateway.io.
+		// Like isPersonal, these orgs are hidden from the dashboard org switcher
+		// and cannot be deleted or managed as team orgs.
+		isChat: boolean().notNull().default(false),
 		devPlan: text({
 			enum: ["none", "lite", "pro", "max"],
 		})
@@ -217,6 +221,23 @@ export const organization = pgTable(
 		// prevent a single card from claiming the DevPass usage allowance from
 		// multiple personal organizations.
 		devPlanCardFingerprint: text(),
+		// Chat Plans fields (for chat.llmgateway.io subscribers)
+		chatPlan: text({
+			enum: ["none", "starter", "plus", "pro"],
+		})
+			.notNull()
+			.default("none"),
+		chatPlanCreditsUsed: decimal().notNull().default("0"),
+		chatPlanCreditsLimit: decimal().notNull().default("0"),
+		chatPlanBillingCycleStart: timestamp(),
+		chatPlanStripeSubscriptionId: text().unique(),
+		chatPlanCancelled: boolean().notNull().default(false),
+		chatPlanExpiresAt: timestamp(),
+		chatPlanCycle: text({ enum: ["monthly"] })
+			.notNull()
+			.default("monthly"),
+		// Same one-card-one-org policy as dev plans.
+		chatPlanCardFingerprint: text(),
 		// Last top-up amount (used for low balance alert thresholds)
 		lastTopUpAmount: decimal(),
 		// Accrued developer margin from end-user credit top-ups (embeddable SDK).
@@ -231,6 +252,13 @@ export const organization = pgTable(
 	(table) => [
 		index("organization_dev_plan_card_fingerprint_idx").on(
 			table.devPlanCardFingerprint,
+		),
+		// Unique so the one-card-one-org rule holds even if concurrent webhook
+		// handlers race past the application-level dedupe check. NULLs (orgs
+		// without a chat plan) are distinct in Postgres, so this only constrains
+		// active fingerprints.
+		uniqueIndex("organization_chat_plan_card_fingerprint_uidx").on(
+			table.chatPlanCardFingerprint,
 		),
 	],
 );
@@ -288,6 +316,12 @@ export const transaction = pgTable(
 				"dev_plan_cancel",
 				"dev_plan_end",
 				"dev_plan_renewal",
+				"chat_plan_start",
+				"chat_plan_upgrade",
+				"chat_plan_downgrade",
+				"chat_plan_cancel",
+				"chat_plan_end",
+				"chat_plan_renewal",
 				// Embeddable SDK end-user wallet flows.
 				"end_user_topup",
 				"end_user_margin_accrual",
@@ -354,6 +388,47 @@ export const devPlanCancellationFeedback = pgTable(
 			table.devPlanStripeSubscriptionId,
 		),
 		index("dev_plan_cancellation_feedback_organization_id_idx").on(
+			table.organizationId,
+		),
+	],
+);
+
+export const chatPlanCancellationFeedback = pgTable(
+	"chat_plan_cancellation_feedback",
+	{
+		id: text().primaryKey().notNull().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		userId: text()
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		chatPlanStripeSubscriptionId: text().notNull(),
+		previousChatPlan: text({
+			enum: ["starter", "plus", "pro"],
+		}),
+		reason: text({
+			enum: [
+				"too_expensive",
+				"missing_features",
+				"not_using_enough",
+				"switched_alternative",
+				"other",
+			],
+		}).notNull(),
+		comments: text(),
+	},
+	(table) => [
+		uniqueIndex("chat_plan_cancellation_feedback_org_sub_unique").on(
+			table.organizationId,
+			table.chatPlanStripeSubscriptionId,
+		),
+		index("chat_plan_cancellation_feedback_organization_id_idx").on(
 			table.organizationId,
 		),
 	],
@@ -1912,6 +1987,11 @@ export const auditLogActions = [
 	"dev_plan.update_settings",
 	"dev_plan.rotate_api_key",
 	"dev_plan.update_payment_method",
+	// Chat Plan
+	"chat_plan.subscribe",
+	"chat_plan.cancel",
+	"chat_plan.resume",
+	"chat_plan.change_tier",
 ] as const;
 
 export const auditLogResourceTypes = [
@@ -1926,6 +2006,7 @@ export const auditLogResourceTypes = [
 	"payment_method",
 	"payment",
 	"dev_plan",
+	"chat_plan",
 ] as const;
 
 export type AuditLogAction = (typeof auditLogActions)[number];

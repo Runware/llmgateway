@@ -175,6 +175,11 @@ export type SerializedOrganization = Omit<
 	| "devPlanCardFingerprint"
 	| "devPlanCreditsFrozen"
 	| "devPlanCreditsLimitBeforeFreeze"
+	| "chatPlanBillingCycleStart"
+	| "chatPlanStripeSubscriptionId"
+	| "chatPlanCancelled"
+	| "chatPlanExpiresAt"
+	| "chatPlanCardFingerprint"
 	| "lastTopUpAmount"
 	// Embeddable SDK internals — not part of the dashboard-facing API surface.
 	| "endUserMarginBalance"
@@ -187,6 +192,8 @@ export type SerializedOrganization = Omit<
 	devPlanBillingCycleStart: string | null;
 	devPlanPremiumWeekStart: string | null;
 	devPlanExpiresAt: string | null;
+	chatPlanBillingCycleStart: string | null;
+	chatPlanExpiresAt: string | null;
 };
 
 export type SerializedProject = Omit<
