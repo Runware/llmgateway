@@ -168,6 +168,7 @@ export type SerializedOrganization = Omit<
 	| "lastPaymentFailureAt"
 	| "paymentFailureStartedAt"
 	| "devPlanBillingCycleStart"
+	| "devPlanPremiumWeekStart"
 	| "devPlanStripeSubscriptionId"
 	| "devPlanCancelled"
 	| "devPlanExpiresAt"
@@ -184,6 +185,7 @@ export type SerializedOrganization = Omit<
 	updatedAt: string;
 	planExpiresAt: string | null;
 	devPlanBillingCycleStart: string | null;
+	devPlanPremiumWeekStart: string | null;
 	devPlanExpiresAt: string | null;
 };
 
