@@ -28,12 +28,18 @@ import {
 	providerSupportsCachedInput,
 } from "@/lib/coding-models.js";
 import { calculateCosts, shouldBillCancelledRequests } from "@/lib/costs.js";
+import {
+	assertOriginAllowed,
+	loadEndUserWallet,
+	withCreditsMode,
+	withWalletCredits,
+} from "@/lib/end-user-session.js";
 import { createFailedKeyTracker } from "@/lib/failed-key-tracker.js";
 import {
 	getGcpAccessToken,
 	getVertexAnthropicProjectId,
 } from "@/lib/gcp-token.js";
-import { throwIamException, validateModelAccess } from "@/lib/iam.js";
+import { throwIamException, validateRequestModelAccess } from "@/lib/iam.js";
 import {
 	calculateDataStorageCost,
 	getUnifiedFinishReason,
@@ -1569,8 +1575,16 @@ chat.openapi(completions, async (c) => {
 
 	assertApiKeyWithinUsageLimits(apiKey);
 
+	// Embeddable SDK: ephemeral end-user session tokens are bound to one wallet.
+	// Validate expiry + load the wallet now; below we present an "effective"
+	// project (forced credits mode) and organization (credits mirror the wallet
+	// balance) so the existing credit-gating logic bills the wallet, while the
+	// log's endCustomerWalletId redirects the worker's debit to that wallet.
+	// (Shared with embeddings/moderations via apps/gateway/src/lib/end-user-session.ts.)
+	const endUserWallet = (await loadEndUserWallet(apiKey)) ?? undefined;
+
 	// Get the project to determine mode for routing decisions
-	const project = await findProjectById(apiKey.projectId);
+	let project = await findProjectById(apiKey.projectId);
 
 	if (!project) {
 		throw new HTTPException(500, {
@@ -1583,6 +1597,13 @@ chat.openapi(completions, async (c) => {
 		throw new HTTPException(410, {
 			message: "Project has been archived and is no longer accessible",
 		});
+	}
+
+	// End-user sessions always bill via wallet credits through llmgateway's own
+	// provider keys — never the developer's BYO keys.
+	if (endUserWallet) {
+		assertOriginAllowed(c, project);
+		project = withCreditsMode(project);
 	}
 
 	const buildFinalResponseMetadata = (discount?: number | null) =>
@@ -1647,7 +1668,7 @@ chat.openapi(completions, async (c) => {
 	}
 
 	// Fetch organization for coding model restriction check and credit validation
-	const organization = await findOrganizationById(project.organizationId);
+	let organization = await findOrganizationById(project.organizationId);
 
 	if (!organization) {
 		throw new HTTPException(500, {
@@ -1659,6 +1680,14 @@ chat.openapi(completions, async (c) => {
 		throw new HTTPException(410, {
 			message: "Organization has been disabled and is no longer accessible",
 		});
+	}
+
+	// End-user session: present the wallet balance as the organization's credits
+	// so all downstream credit-gating evaluates the wallet, not the developer's
+	// org. The real organization.credits row is never touched — the worker debits
+	// the wallet (see apps/gateway/src/lib/end-user-session.ts).
+	if (endUserWallet) {
+		organization = withWalletCredits(organization, endUserWallet);
 	}
 
 	const routingCfg = await getResolvedRoutingConfig(
@@ -1927,8 +1956,8 @@ chat.openapi(completions, async (c) => {
 	// when the only remaining active provider is a denied one but deactivated providers
 	// are still "allowed" by the IAM rules.
 	const clientIp = getClientIpFromRequest(c);
-	const iamValidation = await validateModelAccess(
-		apiKey.id,
+	const iamValidation = await validateRequestModelAccess(
+		apiKey,
 		modelInfo.id,
 		requestedProvider,
 		modelInfo,
@@ -2089,8 +2118,8 @@ chat.openapi(completions, async (c) => {
 			// Validate IAM rules for this candidate model and filter providers.
 			// We must re-evaluate per model because iamAllowedProviders was computed
 			// for the "auto" model which only has the "llmgateway" provider.
-			const candidateIam = await validateModelAccess(
-				apiKey.id,
+			const candidateIam = await validateRequestModelAccess(
+				apiKey,
 				modelDef.id,
 				undefined,
 				modelDef,
@@ -2352,8 +2381,8 @@ chat.openapi(completions, async (c) => {
 		// shortcut.  The original iamAllowedProviders was computed for the "auto"
 		// model (which only has the "llmgateway" provider) and is not meaningful
 		// for the resolved model.
-		const resolvedIamValidation = await validateModelAccess(
-			apiKey.id,
+		const resolvedIamValidation = await validateRequestModelAccess(
+			apiKey,
 			modelInfo.id,
 			undefined,
 			modelInfo,

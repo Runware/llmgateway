@@ -1058,6 +1058,13 @@
       "when": 1780852017972,
       "tag": "1780852017_chubby_wilson_fisk",
       "breakpoints": true
+    },
+    {
+      "idx": 151,
+      "version": "8",
+      "when": 1780855399542,
+      "tag": "1780855399_panoramic_rafael_vega",
+      "breakpoints": true
     }
   ]
 }
