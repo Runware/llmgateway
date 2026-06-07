@@ -1703,7 +1703,6 @@ export const modelProviderMapping = pgTable(
 		jsonOutputSchema: boolean().default(false).notNull(),
 		webSearch: boolean().default(false).notNull(),
 		webSearchPrice: decimal(),
-		discount: decimal().default("0").notNull(),
 		stability: text({
 			enum: ["stable", "beta", "unstable", "experimental"],
 		})
