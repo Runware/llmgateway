@@ -11,7 +11,6 @@ import {
 	MessageSquare,
 	MoreVerticalIcon,
 	PenTool,
-	Plus,
 	Trash2,
 	Users,
 } from "lucide-react";
@@ -57,6 +56,7 @@ import { useAuth } from "@/lib/auth-client";
 
 import { HistorySkeleton } from "./history-skeleton";
 import { OrganizationSwitcher } from "./organization-switcher";
+import { SidebarChatSearch, SidebarNewAction } from "./sidebar-actions";
 
 import type { Organization } from "@/lib/types";
 import type { VideoGalleryItem } from "@/lib/video-gen";
@@ -621,16 +621,8 @@ export function VideoSidebar({
 							</Link>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
-					<SidebarMenuItem>
-						<SidebarMenuButton
-							onClick={onNewChat}
-							tooltip="New Generation"
-							className="border border-border"
-						>
-							<Plus className="h-4 w-4" />
-							<span>New Generation</span>
-						</SidebarMenuButton>
-					</SidebarMenuItem>
+					<SidebarChatSearch disabled />
+					<SidebarNewAction label="New Generation" onAction={onNewChat} />
 					<SidebarMenuItem>
 						<SidebarMenuButton
 							asChild
