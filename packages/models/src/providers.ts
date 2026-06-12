@@ -295,6 +295,7 @@ export const providers: ProviderDefinition[] = [
 		privacyPolicyUrl: null,
 		headquarters: null,
 		dataPolicy: null,
+		priority: 1.2,
 	},
 	{
 		id: "google-vertex",
