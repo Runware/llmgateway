@@ -1080,9 +1080,12 @@ export const providerKey = pgTable(
 			.$onUpdate(() => new Date()),
 		token: text().notNull(),
 		provider: text().notNull(),
-		name: text(), // Optional name for custom providers (lowercase a-z only)
+		name: text(), // Optional name for custom providers (lowercase a-z with single hyphens)
 		baseUrl: text(), // Optional base URL for custom providers
 		options: jsonb().$type<ProviderKeyOptions>(),
+		// When true (custom providers only), requests through this key are
+		// restricted to models defined in its custom model catalog.
+		customModelsOnly: boolean().notNull().default(false),
 		status: text({
 			enum: ["active", "inactive", "deleted"],
 		}).default("active"),
@@ -1093,6 +1096,68 @@ export const providerKey = pgTable(
 	(table) => [
 		unique().on(table.organizationId, table.name),
 		index("provider_key_organization_id_idx").on(table.organizationId),
+	],
+);
+
+// Per-provider-key catalog of custom models. Enterprise orgs define these to
+// attribute cost and enforce context/output limits for custom-provider
+// requests. All pricing/limit/capability fields are optional; prices are stored
+// as text to preserve the catalog's exponent-string format (e.g. "3.0e-6").
+export const customModel = pgTable(
+	"custom_model",
+	{
+		id: text().primaryKey().notNull().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		providerKeyId: text()
+			.notNull()
+			.references(() => providerKey.id, { onDelete: "cascade" }),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		// The model id used after the provider prefix (e.g. "gpt-5.5").
+		modelName: text().notNull(),
+		displayName: text(),
+		contextSize: integer(),
+		maxOutput: integer(),
+		inputPrice: text(),
+		outputPrice: text(),
+		cachedInputPrice: text(),
+		cacheReadInputPrice: text(),
+		cacheWriteInputPrice: text(),
+		cacheWriteInputPrice1h: text(),
+		requestPrice: text(),
+		webSearchPrice: text(),
+		// Custom models are text-output only. Multi-modal *input* (image/audio)
+		// is still supported and priced via the input fields above; output
+		// generation pricing (image/video/audio out) is intentionally omitted
+		// because it is too provider-specific to bill generically.
+		imageInputPrice: text(),
+		audioInputPrice: text(),
+		streaming: text({ enum: ["true", "false", "only"] }),
+		vision: boolean(),
+		tools: boolean(),
+		reasoning: boolean(),
+		jsonOutput: boolean(),
+		audio: boolean(),
+		supportedParameters: jsonb().$type<string[]>(),
+		status: text({
+			enum: ["active", "inactive", "deleted"],
+		})
+			.notNull()
+			.default("active"),
+	},
+	(table) => [
+		// Uniqueness applies only to live rows so a soft-deleted model name can be
+		// recreated (the route soft-deletes by setting status = "deleted").
+		uniqueIndex("custom_model_provider_key_id_model_name_unique")
+			.on(table.providerKeyId, table.modelName)
+			.where(sql`status <> 'deleted'`),
+		index("custom_model_provider_key_id_idx").on(table.providerKeyId),
+		index("custom_model_organization_id_idx").on(table.organizationId),
 	],
 );
 
@@ -2170,6 +2235,10 @@ export const auditLogActions = [
 	"provider_key.create",
 	"provider_key.update",
 	"provider_key.delete",
+	// Custom Model
+	"custom_model.create",
+	"custom_model.update",
+	"custom_model.delete",
 	// Subscription
 	"subscription.create",
 	"subscription.cancel",
@@ -2208,6 +2277,7 @@ export const auditLogResourceTypes = [
 	"master_key",
 	"iam_rule",
 	"provider_key",
+	"custom_model",
 	"subscription",
 	"payment_method",
 	"payment",
