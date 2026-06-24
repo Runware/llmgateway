@@ -1374,6 +1374,35 @@ export const providers: ProviderDefinition[] = [
 			gdpr: true,
 		},
 	},
+	{
+		id: "runware",
+		name: "Runware",
+		description:
+			"Runware provides fast, cost-efficient inference for open and frontier LLMs through an OpenAI-compatible API.",
+		env: {
+			required: {
+				apiKey: "LLM_RUNWARE_API_KEY",
+			},
+			optional: {
+				baseUrl: "LLM_RUNWARE_BASE_URL",
+			},
+		},
+		streaming: true,
+		cancellation: false,
+		color: "#a8f399",
+		website: "https://runware.ai",
+		statusPageUrl: "https://status.runware.ai/",
+		announcement: null,
+		termsUrl: "https://runware.ai/terms",
+		privacyPolicyUrl: "https://runware.ai/privacy",
+		headquarters: "US",
+		dataPolicy: {
+			apiTraining: false,
+			consumerTraining: false,
+			promptLogging: false,
+			retentionPeriod: null,
+		},
+	},
 ] as const satisfies ProviderDefinition[];
 
 export type ProviderId = (typeof providers)[number]["id"];

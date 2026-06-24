@@ -709,6 +709,21 @@ export const xaiModels = [
 		releasedAt: new Date("2026-04-30"),
 		providers: [
 			{
+				providerId: "runware",
+				externalId: "xai-grok-4-3",
+				inputPrice: "1.25e-6",
+				outputPrice: "2.5e-6",
+				cachedInputPrice: "0.2e-6",
+				requestPrice: "0",
+				contextSize: 1048576,
+				maxOutput: 131072,
+				streaming: true,
+				reasoning: true,
+				vision: false,
+				tools: true,
+				jsonOutput: true,
+			},
+			{
 				providerId: "xai",
 				contentFilterPrice: 0.05,
 				externalId: "grok-4.3",

@@ -217,6 +217,21 @@ export const deepseekModels = [
 		releasedAt: new Date("2026-04-24"),
 		providers: [
 			{
+				providerId: "runware",
+				externalId: "deepseek-v4-pro",
+				inputPrice: "0.961e-6",
+				outputPrice: "1.922e-6",
+				cachedInputPrice: "0.079e-6",
+				requestPrice: "0",
+				contextSize: 1048576,
+				maxOutput: 100000,
+				streaming: true,
+				reasoning: true,
+				vision: false,
+				tools: true,
+				jsonOutput: true,
+			},
+			{
 				providerId: "deepseek",
 				externalId: "deepseek-v4-pro",
 				inputPrice: "0.435e-6",
@@ -308,6 +323,21 @@ export const deepseekModels = [
 		family: "deepseek",
 		releasedAt: new Date("2026-04-24"),
 		providers: [
+			{
+				providerId: "runware",
+				externalId: "deepseek-v4-flash",
+				inputPrice: "0.076e-6",
+				outputPrice: "0.153e-6",
+				cachedInputPrice: "0.014e-6",
+				requestPrice: "0",
+				contextSize: 1048576,
+				maxOutput: 384000,
+				streaming: true,
+				reasoning: true,
+				vision: false,
+				tools: true,
+				jsonOutput: true,
+			},
 			{
 				providerId: "deepseek",
 				externalId: "deepseek-v4-flash",

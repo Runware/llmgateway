@@ -255,6 +255,9 @@ export function getProviderEndpoint(
 			case "novita":
 				url = "https://api.novita.ai/v3/openai";
 				break;
+			case "runware":
+				url = "https://api.runware.ai";
+				break;
 			case "moonshot":
 				url = "https://api.moonshot.ai";
 				break;

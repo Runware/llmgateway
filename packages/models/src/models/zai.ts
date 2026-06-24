@@ -70,6 +70,21 @@ export const zaiModels = [
 		releasedAt: new Date("2026-04-07"),
 		providers: [
 			{
+				providerId: "runware",
+				externalId: "zai-glm-5-1",
+				inputPrice: "1.4e-6",
+				outputPrice: "4.4e-6",
+				cachedInputPrice: "0.26e-6",
+				requestPrice: "0",
+				contextSize: 200000,
+				maxOutput: 131072,
+				streaming: true,
+				reasoning: true,
+				vision: false,
+				tools: true,
+				jsonOutput: true,
+			},
+			{
 				providerId: "zai",
 				externalId: "glm-5.1",
 				inputPrice: "1.4e-6",
@@ -541,6 +556,21 @@ export const zaiModels = [
 		family: "glm",
 		releasedAt: new Date("2025-12-22"),
 		providers: [
+			{
+				providerId: "runware",
+				externalId: "zai-glm-4-7",
+				inputPrice: "0.34e-6",
+				outputPrice: "1.487e-6",
+				cachedInputPrice: "0.04e-6",
+				requestPrice: "0",
+				contextSize: 200000,
+				maxOutput: 131072,
+				streaming: true,
+				reasoning: true,
+				vision: false,
+				tools: true,
+				jsonOutput: true,
+			},
 			{
 				providerId: "zai",
 				test: "skip",
