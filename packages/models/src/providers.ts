@@ -920,7 +920,7 @@ export const providers: ProviderDefinition[] = [
 			promptLogging: false,
 			retentionPeriod: "0 days",
 		},
-		priority: 1.5,
+		priority: 1.2,
 	},
 	{
 		id: "moonshot",
