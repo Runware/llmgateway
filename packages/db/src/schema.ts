@@ -541,6 +541,9 @@ export const enterpriseContactSubmission = pgTable(
 		email: text().notNull(),
 		country: text().notNull(),
 		size: text().notNull(),
+		deployment: text({
+			enum: ["self_host", "cloud", "not_sure"],
+		}),
 		message: text().notNull(),
 		honeypot: text(),
 		clientTimestampMs: text(),
@@ -559,6 +562,10 @@ export const enterpriseContactSubmission = pgTable(
 		index("enterprise_contact_submission_email_idx").on(table.email),
 		index("enterprise_contact_submission_status_idx").on(
 			table.spamFilterStatus,
+		),
+		check(
+			"enterprise_contact_submission_deployment_check",
+			sql`${table.deployment} IS NULL OR ${table.deployment} IN ('self_host', 'cloud', 'not_sure')`,
 		),
 	],
 );
