@@ -719,7 +719,7 @@ export const xaiModels = [
 				maxOutput: 131072,
 				streaming: true,
 				reasoning: true,
-				vision: false,
+				vision: true,
 				tools: true,
 				jsonOutput: true,
 			},

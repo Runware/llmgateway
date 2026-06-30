@@ -330,9 +330,9 @@ export const moonshotModels = [
 			{
 				providerId: "runware",
 				externalId: "moonshotai-kimi-k2-6",
-				inputPrice: "0.6e-6",
-				outputPrice: "3.05e-6",
-				cachedInputPrice: "0.13e-6",
+				inputPrice: "0.9e-6",
+				outputPrice: "4.2e-6",
+				cachedInputPrice: "0.18e-6",
 				requestPrice: "0",
 				contextSize: 262144,
 				maxOutput: 49152,

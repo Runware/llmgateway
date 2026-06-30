@@ -488,7 +488,7 @@ export const anthropicModels = [
 				cachedInputPrice: "0.3e-6",
 				requestPrice: "0",
 				contextSize: 1000000,
-				maxOutput: 64000,
+				maxOutput: 128000,
 				streaming: true,
 				reasoning: true,
 				vision: true,

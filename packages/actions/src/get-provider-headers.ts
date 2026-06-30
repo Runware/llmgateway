@@ -104,6 +104,7 @@ export function getProviderHeaders(
 		case "embercloud":
 		case "deepinfra":
 		case "custom":
+		case "runware":
 		default:
 			return {
 				...requestIdHeader,

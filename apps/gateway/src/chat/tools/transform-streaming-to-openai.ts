@@ -1348,6 +1348,7 @@ export function transformStreamingToOpenai(
 		case "bytedance":
 		case "minimax":
 		case "embercloud":
+		case "runware":
 		case "xiaomi":
 		case "azure-ai-foundry":
 		case "vertex-openai":
