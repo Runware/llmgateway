@@ -9,11 +9,21 @@ import { generateAndEmailInvoice } from "@/utils/invoice.js";
 import { getOrCreatePersonalOrg } from "@/utils/personal-org.js";
 
 import { logAuditEvent } from "@llmgateway/audit";
-import { cdb, db, tables, eq, shortid } from "@llmgateway/db";
+import {
+	cdb,
+	db,
+	tables,
+	eq,
+	sql,
+	and,
+	or,
+	lt,
+	isNull,
+	shortid,
+} from "@llmgateway/db";
 import { logger } from "@llmgateway/logger";
 import {
 	DEV_PLAN_PRICES,
-	getDevPlanCreditsLimit,
 	getProratedCreditDelta,
 	type DevPlanCycle,
 	type DevPlanTier,
@@ -140,9 +150,9 @@ function getDevPlanTierChangeCreditPreview(
 	currentTier: DevPlanTier,
 	newTier: DevPlanTier,
 	remainingFraction: number,
+	currentCreditsLimit: number,
 ) {
 	const isUpgrade = DEV_PLAN_PRICES[newTier] > DEV_PLAN_PRICES[currentTier];
-	const currentCreditsLimit = getDevPlanCreditsLimit(currentTier);
 	const proratedCreditDelta = isUpgrade
 		? getProratedCreditDelta(currentTier, newTier, remainingFraction)
 		: 0;
@@ -928,6 +938,7 @@ devPlans.openapi(changeTierPreview, async (c) => {
 		currentTier,
 		newTier,
 		remainingFraction,
+		parseFloat(personalOrg.devPlanCreditsLimit),
 	);
 
 	return c.json({
@@ -1040,6 +1051,11 @@ devPlans.openapi(changeTier, async (c) => {
 
 	const isUpgrade = DEV_PLAN_PRICES[newTier] > DEV_PLAN_PRICES[currentTier];
 
+	// Tracks whether this request won the atomic per-cycle claim, so a failure
+	// after the claim can release it (a declined charge shouldn't burn the user's
+	// one change for the cycle).
+	let claimedCycleThisCall = false;
+
 	try {
 		const subscription =
 			await getStripe().subscriptions.retrieve(subscriptionId);
@@ -1064,6 +1080,38 @@ devPlans.openapi(changeTier, async (c) => {
 				message: "Subscription item not found",
 			});
 		}
+
+		// Allow only one tier change per billing cycle. Repeatedly downgrading and
+		// re-upgrading within a cycle re-charges the user for a tier they still
+		// effectively hold and churns the prorated credit accounting. Claim the
+		// cycle atomically *before* any Stripe call: a single conditional UPDATE
+		// advances the marker to this cycle's Stripe period start only if it hasn't
+		// been claimed yet (NULL or an earlier cycle). Anchoring to the Stripe
+		// period (stable across mid-cycle price swaps, since proration is
+		// suppressed) — rather than a transaction row's createdAt — both avoids a
+		// read-then-write race between concurrent requests and prevents
+		// misattributing a change near a renewal boundary to the wrong cycle.
+		const cycleStart = new Date(subscriptionItem.current_period_start * 1000);
+		const claimed = await db
+			.update(tables.organization)
+			.set({ devPlanLastTierChangeCycleStart: cycleStart })
+			.where(
+				and(
+					eq(tables.organization.id, personalOrg.id),
+					or(
+						isNull(tables.organization.devPlanLastTierChangeCycleStart),
+						lt(tables.organization.devPlanLastTierChangeCycleStart, cycleStart),
+					),
+				),
+			)
+			.returning({ id: tables.organization.id });
+		if (claimed.length === 0) {
+			throw new HTTPException(409, {
+				message:
+					"You can only change your plan once per billing cycle. Your next change takes effect at renewal.",
+			});
+		}
+		claimedCycleThisCall = true;
 
 		const remainingFraction =
 			getRemainingBillingPeriodFraction(subscriptionItem);
@@ -1153,16 +1201,18 @@ devPlans.openapi(changeTier, async (c) => {
 				currentTier,
 				newTier,
 				remainingFraction,
+				parseFloat(personalOrg.devPlanCreditsLimit),
 			);
 
-			// A mid-cycle upgrade preserves the billing anchor, so persist Stripe's
-			// actual period end as the renewal date instead of letting the UI
-			// project a fresh cycle from the upgrade date.
+			// Reflect the new tier immediately, and persist Stripe's actual period
+			// end as the renewal date (a mid-cycle upgrade preserves the billing
+			// anchor, so the UI shouldn't project a fresh cycle from the upgrade
+			// date). The credit grant is applied separately below, gated on winning
+			// the transaction insert.
 			await db
 				.update(tables.organization)
 				.set({
 					devPlan: newTier,
-					devPlanCreditsLimit: creditPreview.newCreditsLimit.toString(),
 					devPlanExpiresAt: new Date(
 						subscriptionItem.current_period_end * 1000,
 					),
@@ -1170,26 +1220,49 @@ devPlans.openapi(changeTier, async (c) => {
 				.where(eq(tables.organization.id, personalOrg.id));
 
 			if (paidUpgrade) {
-				// onConflictDoNothing on the unique stripeInvoiceId index makes this
-				// idempotent against the webhook fallback: only the path that wins the
-				// insert emails the invoice, so a concurrent `invoice.payment_succeeded`
-				// webhook can't produce a second transaction row or a duplicate invoice
-				// email for the same charge.
-				const [upgradeTransaction] = await db
-					.insert(tables.transaction)
-					.values({
-						organizationId: personalOrg.id,
-						type: "dev_plan_upgrade",
-						amount: paidUpgrade.amount.toString(),
-						creditAmount: creditPreview.proratedCreditDelta.toString(),
-						currency: "USD",
-						status: "completed",
-						stripePaymentIntentId: paidUpgrade.paymentIntentId,
-						stripeInvoiceId: paidUpgrade.invoiceId,
-						description: `Changed from ${currentTier} to ${newTier} plan`,
-					})
-					.onConflictDoNothing()
-					.returning();
+				// Insert the unique-stripeInvoiceId marker and apply the credit grant
+				// in one transaction so they commit together. onConflictDoNothing makes
+				// this idempotent against the webhook fallback: only the path that wins
+				// the insert grants the credits and emails the invoice, so a concurrent
+				// `invoice.payment_succeeded` webhook can't double-apply the credit
+				// delta, produce a second transaction row, or send a duplicate email.
+				// Atomicity matters because both paths short-circuit on the existing
+				// marker — a crash between insert and grant would otherwise leave the
+				// invoice recorded with the credit never applied.
+				const upgradeTransaction = await db.transaction(async (tx) => {
+					const [created] = await tx
+						.insert(tables.transaction)
+						.values({
+							organizationId: personalOrg.id,
+							type: "dev_plan_upgrade",
+							amount: paidUpgrade.amount.toString(),
+							creditAmount: creditPreview.proratedCreditDelta.toString(),
+							currency: "USD",
+							status: "completed",
+							stripePaymentIntentId: paidUpgrade.paymentIntentId,
+							stripeInvoiceId: paidUpgrade.invoiceId,
+							description: `Changed from ${currentTier} to ${newTier} plan`,
+						})
+						.onConflictDoNothing()
+						.returning();
+
+					if (created) {
+						// Add the prorated credit delta on top of the existing allowance.
+						// Never recompute the limit from the tier's base allotment: that
+						// discards credits carried into this period by earlier mid-cycle
+						// changes (e.g. a downgrade then re-upgrade), which would shrink the
+						// allowance below the user's accumulated usage and hide the granted
+						// credit.
+						await tx
+							.update(tables.organization)
+							.set({
+								devPlanCreditsLimit: sql`${tables.organization.devPlanCreditsLimit} + ${creditPreview.proratedCreditDelta}`,
+							})
+							.where(eq(tables.organization.id, personalOrg.id));
+					}
+
+					return created;
+				});
 
 				if (upgradeTransaction) {
 					try {
@@ -1254,6 +1327,27 @@ devPlans.openapi(changeTier, async (c) => {
 			success: true,
 		});
 	} catch (error) {
+		// Release the per-cycle claim if we won it but the change didn't complete,
+		// so a transient failure (e.g. a declined upgrade charge) doesn't lock the
+		// user out of changing tiers until renewal. Restores the prior marker value
+		// read before the claim.
+		if (claimedCycleThisCall) {
+			await db
+				.update(tables.organization)
+				.set({
+					devPlanLastTierChangeCycleStart:
+						personalOrg.devPlanLastTierChangeCycleStart,
+				})
+				.where(eq(tables.organization.id, personalOrg.id))
+				.catch((rollbackError) => {
+					logger.error(
+						"Failed to release dev plan tier-change cycle claim after error",
+						rollbackError instanceof Error
+							? rollbackError
+							: new Error(String(rollbackError)),
+					);
+				});
+		}
 		if (error instanceof HTTPException) {
 			throw error;
 		}
