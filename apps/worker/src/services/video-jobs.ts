@@ -669,21 +669,6 @@ function getInlineGoogleVertexVideo(
 	return null;
 }
 
-async function getVideoLogIdByRequestId(
-	requestId: string,
-): Promise<string | null> {
-	const existingLog = await db
-		.select({
-			id: tables.log.id,
-		})
-		.from(tables.log)
-		.where(eq(tables.log.requestId, requestId))
-		.limit(1)
-		.then((rows) => rows[0]);
-
-	return existingLog?.id ?? null;
-}
-
 async function getPublicVideoContentUrl(
 	job: VideoJobRecord,
 	logId?: string | null,
@@ -692,8 +677,7 @@ async function getPublicVideoContentUrl(
 		return null;
 	}
 
-	const resolvedLogId =
-		logId ?? (await getVideoLogIdByRequestId(job.requestId));
+	const resolvedLogId = logId ?? job.logId;
 	if (
 		resolvedLogId &&
 		(job.contentUrl || job.storageUri || getInlineGoogleVertexVideo(job))
@@ -1868,7 +1852,12 @@ async function finalizeVideoJob(job: VideoJobRecord): Promise<void> {
 				dataStorageCost: "0",
 			});
 
-			return jobToLog;
+			await tx
+				.update(tables.videoJob)
+				.set({ logId })
+				.where(eq(tables.videoJob.id, jobToLog.id));
+
+			return { ...jobToLog, logId };
 		});
 
 		if (claimedJob?.contentUrl) {
