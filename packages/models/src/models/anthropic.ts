@@ -48,6 +48,7 @@ export const anthropicModels = [
 				streaming: true,
 				vision: true,
 				tools: true,
+				regions: [{ id: "global" }, { id: "us" }],
 			},
 		],
 	},
