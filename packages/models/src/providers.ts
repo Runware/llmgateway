@@ -1449,7 +1449,7 @@ export const providers: ProviderDefinition[] = [
 		announcement: null,
 		termsUrl: "https://runware.ai/terms",
 		privacyPolicyUrl: "https://runware.ai/privacy",
-		headquarters: "US",
+		headquarters: "GB",
 		dataPolicy: {
 			apiTraining: false,
 			consumerTraining: false,
