@@ -1399,7 +1399,7 @@ export const providers: ProviderDefinition[] = [
 		dataPolicy: {
 			apiTraining: false,
 			consumerTraining: false,
-			promptLogging: false,
+			promptLogging: true,
 			retentionPeriod: null,
 		},
 	},
