@@ -2788,29 +2788,4 @@ export const alibabaModels = [
 			},
 		],
 	},
-	{
-		id: "qwen3.5-27b",
-		name: "Qwen3.5-27B",
-		description:
-			"Qwen3.5-27B-FP8 is a dense 27-billion parameter open-weight model from Alibaba.",
-		family: "alibaba",
-		releasedAt: new Date("2026-04-10"),
-		providers: [
-			{
-				providerId: "runware",
-				externalId: "qwen35_27b_fp8",
-				inputPrice: "0.165e-6",
-				outputPrice: "1.326e-6",
-				cachedInputPrice: "0.024e-6",
-				requestPrice: "0",
-				contextSize: 262144,
-				maxOutput: 128000,
-				streaming: true,
-				reasoning: true,
-				vision: true,
-				tools: true,
-				jsonOutput: true,
-			},
-		],
-	},
 ] as const satisfies ModelDefinition[];
