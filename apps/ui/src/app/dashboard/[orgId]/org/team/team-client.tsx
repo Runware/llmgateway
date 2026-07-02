@@ -1,14 +1,21 @@
 "use client";
 
-import { useParams } from "next/navigation";
-import { useState } from "react";
+import { format, subDays } from "date-fns";
+import { BarChart3Icon, KeyRound } from "lucide-react";
+import Link from "next/link";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { useEffect, useState } from "react";
 
+import { currencyFormatter } from "@/components/analytics/chart-helpers";
+import { DateRangePicker } from "@/components/date-range-picker";
+import { useDashboardNavigation } from "@/hooks/useDashboardNavigation";
 import {
 	useTeamMembers,
 	useAddTeamMember,
 	useUpdateTeamMember,
 	useRemoveTeamMember,
 } from "@/hooks/useTeam";
+import { useUser } from "@/hooks/useUser";
 import { Alert, AlertDescription } from "@/lib/components/alert";
 import { Button } from "@/lib/components/button";
 import {
@@ -45,21 +52,104 @@ import {
 	TableRow,
 } from "@/lib/components/table";
 import { toast } from "@/lib/components/use-toast";
+import { useApi } from "@/lib/fetch-client";
+
+import type { Route } from "next";
+
+function ApiKeyAnalyticsCallout({ href }: { href: Route }) {
+	return (
+		<div className="from-primary/5 via-card to-card relative overflow-hidden rounded-lg border bg-gradient-to-br p-4 sm:p-5">
+			<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+				<div className="flex items-start gap-3">
+					<div className="bg-background flex h-10 w-10 shrink-0 items-center justify-center rounded-md border">
+						<KeyRound className="text-primary h-5 w-5" />
+					</div>
+					<div className="space-y-1">
+						<h3 className="text-sm font-semibold">
+							Prefer to track usage by API key?
+						</h3>
+						<p className="text-muted-foreground max-w-xl text-sm">
+							Every API key has the same breakdown you see here — cost, tokens,
+							requests, and a model-by-model view over time. Handy when your
+							usage runs through services, not just people.
+						</p>
+					</div>
+				</div>
+				<Button asChild variant="outline" className="shrink-0">
+					<Link href={href} prefetch={true}>
+						<BarChart3Icon className="mr-2 h-4 w-4" />
+						View API key analytics
+					</Link>
+				</Button>
+			</div>
+		</div>
+	);
+}
 
 export function TeamClient() {
 	const params = useParams();
 	const organizationId = params.orgId as string;
+	const router = useRouter();
+	const searchParams = useSearchParams();
+	const { buildUrl, buildOrgUrl, selectedOrganization } =
+		useDashboardNavigation();
+	const api = useApi();
+	const { user } = useUser();
 
 	const { data, isLoading } = useTeamMembers(organizationId);
 	const addMemberMutation = useAddTeamMember(organizationId);
 	const updateMemberMutation = useUpdateTeamMember(organizationId);
 	const removeMemberMutation = useRemoveTeamMember(organizationId);
 
+	const currentUserRole = data?.members.find(
+		(member) => member.userId === user?.id,
+	)?.role;
+	const isAdmin = currentUserRole === "owner" || currentUserRole === "admin";
+	const isEnterprise = selectedOrganization?.plan === "enterprise";
+	const showUsage = isEnterprise && isAdmin;
+
 	const [email, setEmail] = useState("");
 	const [role, setRole] = useState<"owner" | "admin" | "developer">(
 		"developer",
 	);
 	const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+
+	useEffect(() => {
+		if (!showUsage) {
+			return;
+		}
+		if (!searchParams.get("from") || !searchParams.get("to")) {
+			const params2 = new URLSearchParams(searchParams.toString());
+			params2.delete("days");
+			const today = new Date();
+			params2.set("from", format(subDays(today, 6), "yyyy-MM-dd"));
+			params2.set("to", format(today, "yyyy-MM-dd"));
+			router.replace(
+				`${buildOrgUrl("org/team")}?${params2.toString()}` as Route,
+			);
+		}
+	}, [showUsage, searchParams, router, buildOrgUrl]);
+
+	const fromStr =
+		searchParams.get("from") ?? format(subDays(new Date(), 6), "yyyy-MM-dd");
+	const toStr = searchParams.get("to") ?? format(new Date(), "yyyy-MM-dd");
+
+	const { data: usageData } = api.useQuery(
+		"get",
+		"/analytics/members",
+		{ params: { query: { organizationId, from: fromStr, to: toStr } } },
+		{ enabled: !!organizationId && showUsage },
+	);
+
+	const usageByUserId = new Map(
+		(usageData?.members ?? []).map((member) => [member.userId, member]),
+	);
+
+	const usageColumnCount = 5;
+	const baseColumnCount = 4;
+	const totalColumnCount = showUsage
+		? baseColumnCount + usageColumnCount
+		: baseColumnCount;
 
 	const handleAddMember = async () => {
 		if (!email) {
@@ -136,82 +226,96 @@ export function TeamClient() {
 		<div className="flex flex-col">
 			<div className="flex-1 space-y-4 p-4 pt-6 md:p-8">
 				<div className="space-y-4">
-					<div className="flex items-center justify-between">
-						<h2 className="text-3xl font-bold tracking-tight">Team</h2>
-						<Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
-							<DialogTrigger asChild>
-								<Button disabled={(data?.members.length ?? 0) >= 5}>
-									Add Member
-								</Button>
-							</DialogTrigger>
-							<DialogContent>
-								<DialogHeader>
-									<DialogTitle>Add Team Member</DialogTitle>
-									<DialogDescription>
-										Add a new member to your organization by entering their
-										email address.
-									</DialogDescription>
-								</DialogHeader>
-								<div className="space-y-4 py-4">
-									<div className="space-y-2">
-										<Label htmlFor="email">Email</Label>
-										<Input
-											id="email"
-											type="email"
-											placeholder="user@example.com"
-											value={email}
-											onChange={(e) => setEmail(e.target.value)}
-										/>
-									</div>
-									<div className="space-y-2">
-										<Label htmlFor="role">Role</Label>
-										<Select
-											value={role}
-											onValueChange={(value) =>
-												setRole(value as "owner" | "admin" | "developer")
-											}
-										>
-											<SelectTrigger>
-												<SelectValue placeholder="Select a role" />
-											</SelectTrigger>
-											<SelectContent>
-												<SelectItem value="developer">Developer</SelectItem>
-												<SelectItem value="admin">Admin</SelectItem>
-												<SelectItem value="owner">Owner</SelectItem>
-											</SelectContent>
-										</Select>
-									</div>
-
-									<Alert>
-										<AlertDescription>
-											Organizations can have up to 5 team members. Contact us at{" "}
-											<a
-												href="mailto:contact@llmgateway.io"
-												className="underline"
+					<div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+						<div>
+							<h2 className="text-3xl font-bold tracking-tight">Team</h2>
+							<p className="text-muted-foreground">
+								Manage your organization's members and their roles
+								{showUsage ? ", and track usage per member" : ""}.
+							</p>
+						</div>
+						<div className="flex items-center gap-2">
+							{showUsage && (
+								<DateRangePicker buildUrl={buildOrgUrl} path="org/team" />
+							)}
+							<Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+								<DialogTrigger asChild>
+									<Button disabled={(data?.members.length ?? 0) >= 5}>
+										Add Member
+									</Button>
+								</DialogTrigger>
+								<DialogContent>
+									<DialogHeader>
+										<DialogTitle>Add Team Member</DialogTitle>
+										<DialogDescription>
+											Add a new member to your organization by entering their
+											email address.
+										</DialogDescription>
+									</DialogHeader>
+									<div className="space-y-4 py-4">
+										<div className="space-y-2">
+											<Label htmlFor="email">Email</Label>
+											<Input
+												id="email"
+												type="email"
+												placeholder="user@example.com"
+												value={email}
+												onChange={(e) => setEmail(e.target.value)}
+											/>
+										</div>
+										<div className="space-y-2">
+											<Label htmlFor="role">Role</Label>
+											<Select
+												value={role}
+												onValueChange={(value) =>
+													setRole(value as "owner" | "admin" | "developer")
+												}
 											>
-												contact@llmgateway.io
-											</a>{" "}
-											to unlock more seats.
-										</AlertDescription>
-									</Alert>
-								</div>
-								<DialogFooter>
-									<Button
-										variant="outline"
-										onClick={() => setIsAddDialogOpen(false)}
-									>
-										Cancel
-									</Button>
-									<Button
-										onClick={handleAddMember}
-										disabled={addMemberMutation.isPending}
-									>
-										{addMemberMutation.isPending ? "Adding..." : "Add Member"}
-									</Button>
-								</DialogFooter>
-							</DialogContent>
-						</Dialog>
+												<SelectTrigger>
+													<SelectValue placeholder="Select a role" />
+												</SelectTrigger>
+												<SelectContent>
+													<SelectItem value="developer">Developer</SelectItem>
+													<SelectItem value="admin">Admin</SelectItem>
+													<SelectItem value="owner">Owner</SelectItem>
+												</SelectContent>
+											</Select>
+										</div>
+
+										<Alert>
+											<AlertDescription>
+												Organizations can have up to 5 team members. Contact us
+												at{" "}
+												<a
+													href="mailto:contact@llmgateway.io"
+													className="underline"
+												>
+													contact@llmgateway.io
+												</a>{" "}
+												to unlock more seats.
+											</AlertDescription>
+										</Alert>
+									</div>
+									<DialogFooter>
+										<Button
+											variant="outline"
+											onClick={() => setIsAddDialogOpen(false)}
+										>
+											Cancel
+										</Button>
+										<Button
+											onClick={handleAddMember}
+											disabled={addMemberMutation.isPending}
+										>
+											{addMemberMutation.isPending ? "Adding..." : "Add Member"}
+										</Button>
+									</DialogFooter>
+								</DialogContent>
+							</Dialog>
+						</div>
 					</div>
+
+					{showUsage && <ApiKeyAnalyticsCallout href={buildUrl("api-keys")} />}
 
 					<Card>
 						<CardHeader>
@@ -219,6 +323,9 @@ export function TeamClient() {
 							<CardDescription>
 								Manage your organization's team members and their roles (
 								{data?.members.length ?? 0}/5 seats used)
+								{showUsage
+									? ". Cost is attributed to the member who created each API key."
+									: ""}
 							</CardDescription>
 						</CardHeader>
 						<CardContent>
@@ -231,54 +338,118 @@ export function TeamClient() {
 											<TableHead>Name</TableHead>
 											<TableHead>Email</TableHead>
 											<TableHead>Role</TableHead>
+											{showUsage && (
+												<>
+													<TableHead className="text-right">Cost</TableHead>
+													<TableHead className="text-right">Tokens</TableHead>
+													<TableHead className="text-right">Requests</TableHead>
+													<TableHead className="text-right">
+														Error rate
+													</TableHead>
+													<TableHead className="text-right">API keys</TableHead>
+												</>
+											)}
 											<TableHead className="text-right">Actions</TableHead>
 										</TableRow>
 									</TableHeader>
 									<TableBody>
-										{data?.members.map((member) => (
-											<TableRow key={member.id}>
-												<TableCell>{member.user.name ?? "—"}</TableCell>
-												<TableCell>{member.user.email}</TableCell>
-												<TableCell>
-													<Select
-														value={member.role}
-														onValueChange={(value) =>
-															handleUpdateRole(
-																member.id,
-																value as "owner" | "admin" | "developer",
-															)
-														}
-														disabled={updateMemberMutation.isPending}
-													>
-														<SelectTrigger className="w-[130px]">
-															<SelectValue />
-														</SelectTrigger>
-														<SelectContent>
-															<SelectItem value="developer">
-																Developer
-															</SelectItem>
-															<SelectItem value="admin">Admin</SelectItem>
-															<SelectItem value="owner">Owner</SelectItem>
-														</SelectContent>
-													</Select>
-												</TableCell>
-												<TableCell className="text-right">
-													<Button
-														variant="destructive"
-														size="sm"
-														onClick={() =>
-															handleRemoveMember(
-																member.id,
-																member.user.name ?? member.user.email,
-															)
-														}
-														disabled={removeMemberMutation.isPending}
-													>
-														Remove
-													</Button>
+										{(data?.members.length ?? 0) === 0 ? (
+											<TableRow>
+												<TableCell
+													colSpan={totalColumnCount}
+													className="text-muted-foreground py-10 text-center"
+												>
+													No members found
 												</TableCell>
 											</TableRow>
-										))}
+										) : (
+											data?.members.map((member) => {
+												const usage = usageByUserId.get(member.userId);
+												const errorRate =
+													usage && usage.requestCount > 0
+														? (usage.errorCount / usage.requestCount) * 100
+														: 0;
+												const displayName = member.user.name ?? "—";
+												return (
+													<TableRow key={member.id}>
+														<TableCell>
+															{showUsage ? (
+																<Link
+																	href={
+																		`${buildOrgUrl(
+																			`org/team/${member.userId}`,
+																		)}?from=${fromStr}&to=${toStr}` as Route
+																	}
+																	className="font-medium hover:underline"
+																>
+																	{displayName}
+																</Link>
+															) : (
+																displayName
+															)}
+														</TableCell>
+														<TableCell>{member.user.email}</TableCell>
+														<TableCell>
+															<Select
+																value={member.role}
+																onValueChange={(value) =>
+																	handleUpdateRole(
+																		member.id,
+																		value as "owner" | "admin" | "developer",
+																	)
+																}
+																disabled={updateMemberMutation.isPending}
+															>
+																<SelectTrigger className="w-[130px]">
+																	<SelectValue />
+																</SelectTrigger>
+																<SelectContent>
+																	<SelectItem value="developer">
+																		Developer
+																	</SelectItem>
+																	<SelectItem value="admin">Admin</SelectItem>
+																	<SelectItem value="owner">Owner</SelectItem>
+																</SelectContent>
+															</Select>
+														</TableCell>
+														{showUsage && (
+															<>
+																<TableCell className="text-right font-medium">
+																	{currencyFormatter.format(usage?.cost ?? 0)}
+																</TableCell>
+																<TableCell className="text-right">
+																	{(usage?.totalTokens ?? 0).toLocaleString()}
+																</TableCell>
+																<TableCell className="text-right">
+																	{(usage?.requestCount ?? 0).toLocaleString()}
+																</TableCell>
+																<TableCell className="text-right">
+																	{errorRate.toFixed(1)}%
+																</TableCell>
+																<TableCell className="text-right">
+																	{usage?.apiKeyCount ?? 0}
+																</TableCell>
+															</>
+														)}
+														<TableCell className="text-right">
+															<Button
+																variant="destructive"
+																size="sm"
+																onClick={() =>
+																	handleRemoveMember(
+																		member.id,
+																		member.user.name ?? member.user.email,
+																	)
+																}
+																disabled={removeMemberMutation.isPending}
+															>
+																Remove
+															</Button>
+														</TableCell>
+													</TableRow>
+												);
+											})
+										)}
 									</TableBody>
 								</Table>
 							)}

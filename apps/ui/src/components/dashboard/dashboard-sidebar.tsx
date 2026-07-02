@@ -43,6 +43,7 @@ import {
 	AnimatedShield,
 	AnimatedShieldAlert,
 	AnimatedTerminal,
+	AnimatedUsers,
 } from "@/components/dashboard/animated-nav-icons";
 import { ReferralDialog } from "@/components/dashboard/referral-dialog";
 import { useDashboardNavigation } from "@/hooks/useDashboardNavigation";
@@ -176,15 +177,6 @@ const ORGANIZATION_SETTINGS = [
 	{
 		href: "org/preferences",
 		label: "Preferences",
-	},
-	{
-		href: "org/team",
-		label: "Team",
-	},
-	{
-		href: "org/members",
-		label: "Members",
-		enterpriseOnly: true,
 	},
 	{
 		href: "org/audit-logs",
@@ -438,6 +430,14 @@ function OrganizationSection({
 			<SidebarGroupContent className="mt-2">
 				<SidebarMenu>
 					<OrgNavItem
+						href={buildOrgUrl("org/team")}
+						label="Team"
+						icon={AnimatedUsers}
+						isActive={isActive("org/team")}
+						isMobile={isMobile}
+						toggleSidebar={toggleSidebar}
+					/>
+					<OrgNavItem
 						href={buildOrgUrl("org/provider-keys")}
 						label="Provider Keys"
 						icon={AnimatedKeyRound}
@@ -519,8 +519,6 @@ function OrganizationSection({
 								isActive("org/referrals") ||
 								isActive("org/policies") ||
 								isActive("org/preferences") ||
-								isActive("org/team") ||
-								isActive("org/members") ||
 								isActive("org/audit-logs")
 							}
 							tooltip="Settings"

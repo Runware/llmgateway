@@ -58,7 +58,7 @@ export function MemberDetailClient() {
 			params2.set("from", format(subDays(today, 6), "yyyy-MM-dd"));
 			params2.set("to", format(today, "yyyy-MM-dd"));
 			router.replace(
-				`${buildOrgUrl(`org/members/${userId}`)}?${params2.toString()}` as Route,
+				`${buildOrgUrl(`org/team/${userId}`)}?${params2.toString()}` as Route,
 			);
 		}
 	}, [searchParams, router, buildOrgUrl, userId]);
@@ -137,13 +137,13 @@ export function MemberDetailClient() {
 				<div className="flex-1 space-y-4 p-4 pt-6 md:p-8">
 					<Link
 						href={
-							`${buildOrgUrl("org/members")}?from=${fromStr}&to=${toStr}` as Route
+							`${buildOrgUrl("org/team")}?from=${fromStr}&to=${toStr}` as Route
 						}
 						className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
 						prefetch={true}
 					>
 						<ArrowLeftIcon className="h-4 w-4" />
-						Back to members
+						Back to team
 					</Link>
 					{!isEnterprise ? (
 						<Card className="max-w-2xl">
@@ -183,13 +183,13 @@ export function MemberDetailClient() {
 			<div className="flex-1 space-y-4 p-4 pt-6 md:p-8">
 				<Link
 					href={
-						`${buildOrgUrl("org/members")}?from=${fromStr}&to=${toStr}` as Route
+						`${buildOrgUrl("org/team")}?from=${fromStr}&to=${toStr}` as Route
 					}
 					className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
 					prefetch={true}
 				>
 					<ArrowLeftIcon className="h-4 w-4" />
-					Back to members
+					Back to team
 				</Link>
 
 				<div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
@@ -203,10 +203,7 @@ export function MemberDetailClient() {
 							</p>
 						)}
 					</div>
-					<DateRangePicker
-						buildUrl={buildOrgUrl}
-						path={`org/members/${userId}`}
-					/>
+					<DateRangePicker buildUrl={buildOrgUrl} path={`org/team/${userId}`} />
 				</div>
 
 				<div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
