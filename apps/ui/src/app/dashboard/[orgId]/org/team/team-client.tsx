@@ -1,7 +1,7 @@
 "use client";
 
 import { format, subDays } from "date-fns";
-import { BarChart3Icon, KeyRound } from "lucide-react";
+import { BarChart3Icon, Info, KeyRound, Mail, TrendingUp } from "lucide-react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -34,6 +34,11 @@ import {
 	DialogTitle,
 	DialogTrigger,
 } from "@/lib/components/dialog";
+import {
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@/lib/components/hover-card";
 import { Input } from "@/lib/components/input";
 import { Label } from "@/lib/components/label";
 import {
@@ -80,6 +85,87 @@ function ApiKeyAnalyticsCallout({ href }: { href: Route }) {
 						<BarChart3Icon className="mr-2 h-4 w-4" />
 						View API key analytics
 					</Link>
+				</Button>
+			</div>
+		</div>
+	);
+}
+
+const ROLE_PERMISSIONS = [
+	{
+		role: "Owner",
+		description:
+			"Full access to all features including team management, billing, and organization settings.",
+	},
+	{
+		role: "Admin",
+		description:
+			"Can manage team members, projects, and API keys, but cannot access billing settings or modify owners.",
+	},
+	{
+		role: "Developer",
+		description:
+			"Can view and use projects and API keys, but cannot modify team or organization settings.",
+	},
+	{
+		role: "Restricted Access",
+		description:
+			"If you want a user to just access the API but not the dashboard or settings, just add an API key for them, where you can also set specific permissions.",
+	},
+] as const;
+
+function RolePermissionsHoverCard() {
+	return (
+		<HoverCard openDelay={100} closeDelay={100}>
+			<HoverCardTrigger asChild>
+				<button
+					type="button"
+					className="text-muted-foreground hover:text-foreground inline-flex items-center align-middle transition-colors"
+					aria-label="Role permissions"
+				>
+					<Info className="h-3.5 w-3.5" />
+				</button>
+			</HoverCardTrigger>
+			<HoverCardContent align="start" className="w-80 space-y-3">
+				<p className="text-sm font-semibold">Role permissions</p>
+				{ROLE_PERMISSIONS.map((item) => (
+					<div key={item.role}>
+						<h4 className="text-sm font-medium">{item.role}</h4>
+						<p className="text-muted-foreground text-xs">{item.description}</p>
+					</div>
+				))}
+			</HoverCardContent>
+		</HoverCard>
+	);
+}
+
+function MemberUsageUpsell() {
+	return (
+		<div className="from-primary/5 via-card to-card relative overflow-hidden rounded-lg border bg-gradient-to-br p-4 sm:p-5">
+			<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+				<div className="flex items-start gap-3">
+					<div className="bg-background flex h-10 w-10 shrink-0 items-center justify-center rounded-md border">
+						<TrendingUp className="text-primary h-5 w-5" />
+					</div>
+					<div className="space-y-1">
+						<h3 className="text-sm font-semibold">
+							See usage by team member
+							<span className="text-muted-foreground ml-2 text-xs font-normal">
+								Enterprise
+							</span>
+						</h3>
+						<p className="text-muted-foreground max-w-xl text-sm">
+							Upgrade to Enterprise to break down cost, tokens, requests, and
+							error rate per member — with a drill-down into the models,
+							providers, and apps each person uses most, over any time period.
+						</p>
+					</div>
+				</div>
+				<Button asChild variant="outline" className="shrink-0">
+					<a href="mailto:contact@llmgateway.io">
+						<Mail className="mr-2 h-4 w-4" />
+						Contact Sales
+					</a>
 				</Button>
 			</div>
 		</div>
@@ -145,7 +231,7 @@ export function TeamClient() {
 		(usageData?.members ?? []).map((member) => [member.userId, member]),
 	);
 
-	const usageColumnCount = 5;
+	const usageColumnCount = 4;
 	const baseColumnCount = 4;
 	const totalColumnCount = showUsage
 		? baseColumnCount + usageColumnCount
@@ -317,6 +403,8 @@ export function TeamClient() {
 
 					{showUsage && <ApiKeyAnalyticsCallout href={buildUrl("api-keys")} />}
 
+					{!isEnterprise && <MemberUsageUpsell />}
+
 					<Card>
 						<CardHeader>
 							<CardTitle>Team Members</CardTitle>
@@ -337,15 +425,17 @@ export function TeamClient() {
 										<TableRow>
 											<TableHead>Name</TableHead>
 											<TableHead>Email</TableHead>
-											<TableHead>Role</TableHead>
+											<TableHead>
+												<span className="inline-flex items-center gap-1.5">
+													Role
+													<RolePermissionsHoverCard />
+												</span>
+											</TableHead>
 											{showUsage && (
 												<>
 													<TableHead className="text-right">Cost</TableHead>
 													<TableHead className="text-right">Tokens</TableHead>
 													<TableHead className="text-right">Requests</TableHead>
-													<TableHead className="text-right">
-														Error rate
-													</TableHead>
 													<TableHead className="text-right">API keys</TableHead>
 												</>
 											)}
@@ -365,28 +455,20 @@ export function TeamClient() {
 										) : (
 											data?.members.map((member) => {
 												const usage = usageByUserId.get(member.userId);
-												const errorRate =
-													usage && usage.requestCount > 0
-														? (usage.errorCount / usage.requestCount) * 100
-														: 0;
 												const displayName = member.user.name ?? "—";
 												return (
 													<TableRow key={member.id}>
 														<TableCell>
-															{showUsage ? (
-																<Link
-																	href={
-																		`${buildOrgUrl(
-																			`org/team/${member.userId}`,
-																		)}?from=${fromStr}&to=${toStr}` as Route
-																	}
-																	className="font-medium hover:underline"
-																>
-																	{displayName}
-																</Link>
-															) : (
-																displayName
-															)}
+															<Link
+																href={
+																	`${buildOrgUrl(
+																		`org/team/${member.userId}`,
+																	)}?from=${fromStr}&to=${toStr}` as Route
+																}
+																className="font-medium hover:underline"
+															>
+																{displayName}
+															</Link>
 														</TableCell>
 														<TableCell>{member.user.email}</TableCell>
 														<TableCell>
@@ -424,9 +506,6 @@ export function TeamClient() {
 																	{(usage?.requestCount ?? 0).toLocaleString()}
 																</TableCell>
 																<TableCell className="text-right">
-																	{errorRate.toFixed(1)}%
-																</TableCell>
-																<TableCell className="text-right">
 																	{usage?.apiKeyCount ?? 0}
 																</TableCell>
 															</>
@@ -453,46 +532,6 @@ export function TeamClient() {
 									</TableBody>
 								</Table>
 							)}
-						</CardContent>
-					</Card>
-
-					<Card>
-						<CardHeader>
-							<CardTitle>Role Permissions</CardTitle>
-							<CardDescription>
-								Understanding what each role can do
-							</CardDescription>
-						</CardHeader>
-						<CardContent className="space-y-4">
-							<div>
-								<h4 className="font-semibold">Owner</h4>
-								<p className="text-muted-foreground text-sm">
-									Full access to all features including team management,
-									billing, and organization settings.
-								</p>
-							</div>
-							<div>
-								<h4 className="font-semibold">Admin</h4>
-								<p className="text-muted-foreground text-sm">
-									Can manage team members, projects, and API keys, but cannot
-									access billing settings or modify owners.
-								</p>
-							</div>
-							<div>
-								<h4 className="font-semibold">Developer</h4>
-								<p className="text-muted-foreground text-sm">
-									Can view and use projects and API keys, but cannot modify team
-									or organization settings.
-								</p>
-							</div>
-							<div>
-								<h4 className="font-semibold">Restricted Access</h4>
-								<p className="text-muted-foreground text-sm">
-									If you want a user to just access the API but not the
-									dashboard or settings, just add an API key for them, where you
-									can also set specific permissions.
-								</p>
-							</div>
 						</CardContent>
 					</Card>
 				</div>

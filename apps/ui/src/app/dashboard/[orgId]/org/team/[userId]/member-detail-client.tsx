@@ -44,13 +44,20 @@ export function MemberDetailClient() {
 	const { user } = useUser();
 	const { data: teamData } = useTeamMembers(organizationId);
 
+	const teamMember = teamData?.members.find(
+		(member) => member.userId === userId,
+	);
 	const currentUserRole = teamData?.members.find(
 		(member) => member.userId === user?.id,
 	)?.role;
 	const isAdmin = currentUserRole === "owner" || currentUserRole === "admin";
 	const isEnterprise = selectedOrganization?.plan === "enterprise";
+	const showUsage = isEnterprise && isAdmin;
 
 	useEffect(() => {
+		if (!showUsage) {
+			return;
+		}
 		if (!searchParams.get("from") || !searchParams.get("to")) {
 			const params2 = new URLSearchParams(searchParams.toString());
 			params2.delete("days");
@@ -61,7 +68,7 @@ export function MemberDetailClient() {
 				`${buildOrgUrl(`org/team/${userId}`)}?${params2.toString()}` as Route,
 			);
 		}
-	}, [searchParams, router, buildOrgUrl, userId]);
+	}, [showUsage, searchParams, router, buildOrgUrl, userId]);
 
 	const fromStr =
 		searchParams.get("from") ?? format(subDays(new Date(), 6), "yyyy-MM-dd");
@@ -76,7 +83,7 @@ export function MemberDetailClient() {
 				query: { organizationId, from: fromStr, to: toStr },
 			},
 		},
-		{ enabled: !!organizationId && !!userId && isEnterprise && isAdmin },
+		{ enabled: !!organizationId && !!userId && showUsage },
 	);
 
 	const summary = data?.summary;
@@ -129,54 +136,14 @@ export function MemberDetailClient() {
 		},
 	];
 
-	const memberName = data?.member.name || data?.member.email || "Member";
-
-	if (!isEnterprise || !isAdmin) {
-		return (
-			<div className="flex flex-col">
-				<div className="flex-1 space-y-4 p-4 pt-6 md:p-8">
-					<Link
-						href={
-							`${buildOrgUrl("org/team")}?from=${fromStr}&to=${toStr}` as Route
-						}
-						className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-						prefetch={true}
-					>
-						<ArrowLeftIcon className="h-4 w-4" />
-						Back to team
-					</Link>
-					{!isEnterprise ? (
-						<Card className="max-w-2xl">
-							<CardHeader>
-								<CardTitle>Enterprise Feature</CardTitle>
-								<CardDescription>
-									Per-member usage analytics are available on the Enterprise
-									plan
-								</CardDescription>
-							</CardHeader>
-							<CardContent>
-								<Button asChild>
-									<a href="mailto:contact@llmgateway.io">
-										<Mail className="mr-2 h-4 w-4" />
-										Contact Sales
-									</a>
-								</Button>
-							</CardContent>
-						</Card>
-					) : (
-						<Card className="max-w-2xl">
-							<CardHeader>
-								<CardTitle>Admins only</CardTitle>
-								<CardDescription>
-									Only organization owners and admins can view member usage.
-								</CardDescription>
-							</CardHeader>
-						</Card>
-					)}
-				</div>
-			</div>
-		);
-	}
+	const memberName =
+		teamMember?.user.name ||
+		teamMember?.user.email ||
+		data?.member.name ||
+		data?.member.email ||
+		"Member";
+	const memberEmail = teamMember?.user.email ?? data?.member.email;
+	const memberRole = teamMember?.role;
 
 	return (
 		<div className="flex flex-col">
@@ -185,7 +152,7 @@ export function MemberDetailClient() {
 					href={
 						`${buildOrgUrl("org/team")}?from=${fromStr}&to=${toStr}` as Route
 					}
-					className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+					className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-sm"
 					prefetch={true}
 				>
 					<ArrowLeftIcon className="h-4 w-4" />
@@ -197,96 +164,137 @@ export function MemberDetailClient() {
 						<h2 className="truncate text-3xl font-bold tracking-tight">
 							{memberName}
 						</h2>
-						{data?.member.name && (
-							<p className="text-sm text-muted-foreground">
-								{data.member.email}
-							</p>
-						)}
+						<div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-3 text-sm">
+							{memberEmail && memberName !== memberEmail && (
+								<span>{memberEmail}</span>
+							)}
+							{memberRole && <span className="capitalize">{memberRole}</span>}
+						</div>
 					</div>
-					<DateRangePicker buildUrl={buildOrgUrl} path={`org/team/${userId}`} />
+					{showUsage && (
+						<DateRangePicker
+							buildUrl={buildOrgUrl}
+							path={`org/team/${userId}`}
+						/>
+					)}
 				</div>
 
-				<div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-					{stats.map((stat) => (
-						<Card key={stat.label}>
-							<CardHeader className="pb-2">
-								<CardTitle className="text-xs font-medium text-muted-foreground">
-									{stat.label}
-								</CardTitle>
+				{!isEnterprise ? (
+					<Card className="max-w-2xl">
+						<CardHeader>
+							<CardTitle>Enterprise Feature</CardTitle>
+							<CardDescription>
+								Per-member usage analytics are available on the Enterprise plan
+							</CardDescription>
+						</CardHeader>
+						<CardContent className="space-y-4">
+							<p className="text-muted-foreground text-sm">
+								Upgrade to Enterprise to see this member's cost, tokens,
+								requests, and the models, providers, and apps they use most —
+								over any time period.
+							</p>
+							<Button asChild>
+								<a href="mailto:contact@llmgateway.io">
+									<Mail className="mr-2 h-4 w-4" />
+									Contact Sales
+								</a>
+							</Button>
+						</CardContent>
+					</Card>
+				) : !isAdmin ? (
+					<Card className="max-w-2xl">
+						<CardHeader>
+							<CardTitle>Admins only</CardTitle>
+							<CardDescription>
+								Only organization owners and admins can view member usage.
+							</CardDescription>
+						</CardHeader>
+					</Card>
+				) : (
+					<>
+						<div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+							{stats.map((stat) => (
+								<Card key={stat.label}>
+									<CardHeader className="pb-2">
+										<CardTitle className="text-muted-foreground text-xs font-medium">
+											{stat.label}
+										</CardTitle>
+									</CardHeader>
+									<CardContent>
+										<div className="text-2xl font-bold">
+											{isLoading ? "—" : stat.value}
+										</div>
+									</CardContent>
+								</Card>
+							))}
+						</div>
+
+						<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+							{mostUsed.map((item) => (
+								<Card key={item.label}>
+									<CardHeader className="pb-2">
+										<CardTitle className="text-muted-foreground flex items-center gap-2 text-xs font-medium">
+											<item.icon className="h-4 w-4" />
+											{item.label}
+										</CardTitle>
+									</CardHeader>
+									<CardContent>
+										<div className="truncate text-lg font-semibold">
+											{isLoading ? "—" : item.value}
+										</div>
+									</CardContent>
+								</Card>
+							))}
+						</div>
+
+						<CostByModelCard
+							activity={activity}
+							loading={isLoading}
+							description={`Top models by cost for ${memberName}`}
+						/>
+
+						<Card>
+							<CardHeader>
+								<CardTitle className="text-base">Top providers</CardTitle>
 							</CardHeader>
 							<CardContent>
-								<div className="text-2xl font-bold">
-									{isLoading ? "—" : stat.value}
-								</div>
-							</CardContent>
-						</Card>
-					))}
-				</div>
-
-				<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-					{mostUsed.map((item) => (
-						<Card key={item.label}>
-							<CardHeader className="pb-2">
-								<CardTitle className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-									<item.icon className="h-4 w-4" />
-									{item.label}
-								</CardTitle>
-							</CardHeader>
-							<CardContent>
-								<div className="truncate text-lg font-semibold">
-									{isLoading ? "—" : item.value}
-								</div>
-							</CardContent>
-						</Card>
-					))}
-				</div>
-
-				<CostByModelCard
-					activity={activity}
-					loading={isLoading}
-					description={`Top models by cost for ${memberName}`}
-				/>
-
-				<Card>
-					<CardHeader>
-						<CardTitle className="text-base">Top providers</CardTitle>
-					</CardHeader>
-					<CardContent>
-						<Table>
-							<TableHeader>
-								<TableRow>
-									<TableHead>Provider</TableHead>
-									<TableHead className="text-right">Cost</TableHead>
-									<TableHead className="text-right">Requests</TableHead>
-								</TableRow>
-							</TableHeader>
-							<TableBody>
-								{(data?.topProviders.length ?? 0) === 0 ? (
-									<TableRow>
-										<TableCell
-											colSpan={3}
-											className="py-6 text-center text-muted-foreground"
-										>
-											No data
-										</TableCell>
-									</TableRow>
-								) : (
-									data?.topProviders.map((p) => (
-										<TableRow key={p.key}>
-											<TableCell className="font-medium">{p.key}</TableCell>
-											<TableCell className="text-right">
-												{currencyFormatter.format(p.cost)}
-											</TableCell>
-											<TableCell className="text-right">
-												{p.requestCount.toLocaleString()}
-											</TableCell>
+								<Table>
+									<TableHeader>
+										<TableRow>
+											<TableHead>Provider</TableHead>
+											<TableHead className="text-right">Cost</TableHead>
+											<TableHead className="text-right">Requests</TableHead>
 										</TableRow>
-									))
-								)}
-							</TableBody>
-						</Table>
-					</CardContent>
-				</Card>
+									</TableHeader>
+									<TableBody>
+										{(data?.topProviders.length ?? 0) === 0 ? (
+											<TableRow>
+												<TableCell
+													colSpan={3}
+													className="text-muted-foreground py-6 text-center"
+												>
+													No data
+												</TableCell>
+											</TableRow>
+										) : (
+											data?.topProviders.map((p) => (
+												<TableRow key={p.key}>
+													<TableCell className="font-medium">{p.key}</TableCell>
+													<TableCell className="text-right">
+														{currencyFormatter.format(p.cost)}
+													</TableCell>
+													<TableCell className="text-right">
+														{p.requestCount.toLocaleString()}
+													</TableCell>
+												</TableRow>
+											))
+										)}
+									</TableBody>
+								</Table>
+							</CardContent>
+						</Card>
+					</>
+				)}
 			</div>
 		</div>
 	);
