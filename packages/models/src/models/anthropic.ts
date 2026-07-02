@@ -542,11 +542,13 @@ export const anthropicModels = [
 			{
 				providerId: "anthropic",
 				externalId: "claude-sonnet-5",
-				inputPrice: "3.0e-6",
-				outputPrice: "15.0e-6",
-				cachedInputPrice: "0.3e-6",
-				cacheWriteInputPrice: "3.75e-6",
-				cacheWriteInputPrice1h: "6.0e-6",
+				// Introductory pricing through 2026-08-31 (input $2, output $10 per 1M);
+				// standard rate is input $3, output $15.
+				inputPrice: "2.0e-6",
+				outputPrice: "10.0e-6",
+				cachedInputPrice: "0.2e-6",
+				cacheWriteInputPrice: "2.5e-6",
+				cacheWriteInputPrice1h: "4.0e-6",
 				minCacheableTokens: 4096,
 				requestPrice: "0",
 				contextSize: 1000000,
@@ -565,11 +567,13 @@ export const anthropicModels = [
 			{
 				providerId: "aws-bedrock",
 				externalId: "anthropic.claude-sonnet-5",
-				inputPrice: "3.0e-6",
-				outputPrice: "15.0e-6",
-				cachedInputPrice: "0.3e-6",
-				cacheWriteInputPrice: "3.75e-6",
-				cacheWriteInputPrice1h: "6.0e-6",
+				// Introductory pricing through 2026-08-31 (input $2, output $10 per 1M);
+				// standard rate is input $3, output $15.
+				inputPrice: "2.0e-6",
+				outputPrice: "10.0e-6",
+				cachedInputPrice: "0.2e-6",
+				cacheWriteInputPrice: "2.5e-6",
+				cacheWriteInputPrice1h: "4.0e-6",
 				minCacheableTokens: 4096,
 				requestPrice: "0",
 				contextSize: 1000000,
