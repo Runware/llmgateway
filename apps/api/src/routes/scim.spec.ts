@@ -110,6 +110,90 @@ describe("scim audit logging", () => {
 		expect(logs[0]?.metadata?.targetUserId).toBe(id);
 	});
 
+	test("DELETE /Users revokes the deprovisioned member's API keys", async () => {
+		const created = await app.request("/scim/v2/Users", {
+			method: "POST",
+			headers: scimHeaders(),
+			body: JSON.stringify({
+				userName: "erin@example.com",
+				emails: [{ value: "erin@example.com", primary: true }],
+				active: true,
+			}),
+		});
+		const { id } = (await created.json()) as { id: string };
+
+		await db.insert(tables.project).values({
+			id: "scim-test-project",
+			name: "SCIM Project",
+			organizationId: ORG_ID,
+		});
+
+		await db.insert(tables.apiKey).values({
+			id: "scim-test-key",
+			token: "scim-test-key-token",
+			description: "erin key",
+			projectId: "scim-test-project",
+			createdBy: id,
+		});
+
+		const response = await app.request(`/scim/v2/Users/${id}`, {
+			method: "DELETE",
+			headers: scimHeaders(),
+		});
+
+		expect(response.status).toBe(204);
+
+		const key = await db.query.apiKey.findFirst({
+			where: { id: { eq: "scim-test-key" } },
+			columns: { status: true },
+		});
+		expect(key?.status).toBe("deleted");
+	});
+
+	test("PATCH /Users deactivation revokes the member's API keys", async () => {
+		const created = await app.request("/scim/v2/Users", {
+			method: "POST",
+			headers: scimHeaders(),
+			body: JSON.stringify({
+				userName: "frank@example.com",
+				emails: [{ value: "frank@example.com", primary: true }],
+				active: true,
+			}),
+		});
+		const { id } = (await created.json()) as { id: string };
+
+		await db.insert(tables.project).values({
+			id: "scim-test-project-2",
+			name: "SCIM Project 2",
+			organizationId: ORG_ID,
+		});
+
+		await db.insert(tables.apiKey).values({
+			id: "scim-test-key-2",
+			token: "scim-test-key-token-2",
+			description: "frank key",
+			projectId: "scim-test-project-2",
+			createdBy: id,
+		});
+
+		const response = await app.request(`/scim/v2/Users/${id}`, {
+			method: "PATCH",
+			headers: scimHeaders(),
+			body: JSON.stringify({
+				schemas: ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+				Operations: [{ op: "replace", path: "active", value: false }],
+			}),
+		});
+
+		expect(response.status).toBe(200);
+
+		const key = await db.query.apiKey.findFirst({
+			where: { id: { eq: "scim-test-key-2" } },
+			columns: { status: true },
+		});
+		expect(key?.status).toBe("deleted");
+	});
+
 	test("PATCH /Users deactivation logs scim.user.deactivate", async () => {
 		const created = await app.request("/scim/v2/Users", {
 			method: "POST",

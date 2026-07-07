@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 
 import { getApiBaseUrl } from "@/lib/api-url.js";
+import { revokeMemberApiKeys } from "@/lib/revoke-member-api-keys.js";
 import { resolveDefaultProjectIds } from "@/lib/sso-default-projects.js";
 
 import { logAuditEvent } from "@llmgateway/audit";
@@ -482,6 +483,9 @@ async function removeMembership(userId: string, organizationId: string) {
 				eq(tables.userOrganization.organizationId, organizationId),
 			),
 		);
+	// Revoke the deprovisioned member's API keys so access actually stops; the
+	// gateway does not re-check org membership on each request.
+	await revokeMemberApiKeys(userId, organizationId);
 }
 
 // Returns true when a new org membership was created (the member was
