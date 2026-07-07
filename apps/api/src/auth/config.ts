@@ -937,6 +937,32 @@ The LLM Gateway Team`.trim();
 					return;
 				}),
 				after: createAuthMiddleware(async (ctx) => {
+					// Prefill the username on the IdP sign-in page for SP-initiated SAML.
+					// The SSO plugin only forwards `loginHint` on its OIDC path; for SAML
+					// it returns the redirect URL untouched. Microsoft Entra ID (and other
+					// IdPs that support it) honor a `login_hint` query param on the SAML2
+					// SSO URL, so append the email the user already typed. Scoped to the
+					// SAML redirect binding via the `SAMLRequest` param; a stray
+					// `login_hint` is ignored by IdPs that don't support it.
+					if (ctx.path === "/sign-in/sso") {
+						const returned = ctx.context.returned;
+						const email = (ctx.body as { email?: string } | undefined)?.email
+							?.trim()
+							.toLowerCase();
+						if (
+							email &&
+							returned &&
+							typeof returned === "object" &&
+							"url" in returned &&
+							typeof returned.url === "string" &&
+							returned.url.includes("SAMLRequest")
+						) {
+							const url = new URL(returned.url);
+							url.searchParams.set("login_hint", email);
+							ctx.context.returned = { ...returned, url: url.toString() };
+						}
+					}
+
 					// Create default org/project for first-time sessions (email signup or first social sign-in)
 					const newSession = ctx.context.newSession;
 					if (!newSession?.user) {
