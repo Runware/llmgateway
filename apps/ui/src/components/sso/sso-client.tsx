@@ -131,6 +131,7 @@ export function SsoClient() {
 	const [domain, setDomain] = useState("");
 	const [entryPoint, setEntryPoint] = useState("");
 	const [cert, setCert] = useState("");
+	const [enforced, setEnforced] = useState(true);
 	const [generatedToken, setGeneratedToken] = useState<string | null>(null);
 	const [groupName, setGroupName] = useState("");
 	const [role, setRole] = useState<"owner" | "admin" | "developer">(
@@ -277,6 +278,7 @@ export function SsoClient() {
 					domain: domain.trim(),
 					entryPoint: entryPoint.trim(),
 					cert: cert.trim(),
+					enforced,
 				},
 			});
 			toast({ title: "SSO connection created" });
@@ -286,6 +288,7 @@ export function SsoClient() {
 			setDomain("");
 			setEntryPoint("");
 			setCert("");
+			setEnforced(true);
 			invalidateProviders();
 		} catch (error) {
 			toast({
@@ -421,8 +424,9 @@ export function SsoClient() {
 										<div>
 											<p className="text-sm font-medium">Require SSO</p>
 											<p className="text-xs text-muted-foreground">
-												Block password, social and passkey sign-in for{" "}
-												{provider.domain}.
+												{provider.enforced
+													? `Password, social and passkey sign-in are blocked for ${provider.domain}.`
+													: `Password, social and passkey sign-in are allowed for ${provider.domain}.`}
 											</p>
 										</div>
 										<Switch
@@ -573,6 +577,16 @@ export function SsoClient() {
 											rows={5}
 											required
 										/>
+									</div>
+									<div className="flex items-center justify-between rounded-md bg-muted/40 px-3 py-2">
+										<div>
+											<p className="text-sm font-medium">Require SSO</p>
+											<p className="text-xs text-muted-foreground">
+												Block password, social and passkey sign-in for
+												{domain.trim() ? ` ${domain.trim()}` : " this domain"}.
+											</p>
+										</div>
+										<Switch checked={enforced} onCheckedChange={setEnforced} />
 									</div>
 									<Button type="submit" disabled={registerMutation.isPending}>
 										{registerMutation.isPending

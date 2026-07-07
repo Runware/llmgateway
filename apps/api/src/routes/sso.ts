@@ -179,6 +179,10 @@ const registerBodySchema = z.object({
 	cert: z.string().trim().min(1).openapi({
 		description: "IdP X.509 signing certificate (PEM or base64 body)",
 	}),
+	enforced: z.boolean().default(true).openapi({
+		description:
+			"When true, users whose email domain matches may only sign in via SSO",
+	}),
 });
 
 const listQuerySchema = z.object({
@@ -209,8 +213,15 @@ sso.openapi(register, async (c) => {
 		throw new HTTPException(401, { message: "Unauthorized" });
 	}
 
-	const { organizationId, providerId, providerType, domain, entryPoint, cert } =
-		c.req.valid("json");
+	const {
+		organizationId,
+		providerId,
+		providerType,
+		domain,
+		entryPoint,
+		cert,
+		enforced,
+	} = c.req.valid("json");
 
 	await assertEnterpriseOrgAccess(user.id, organizationId);
 
@@ -282,7 +293,7 @@ sso.openapi(register, async (c) => {
 
 	const [provider] = await db
 		.update(tables.ssoProvider)
-		.set({ organizationId, providerType })
+		.set({ organizationId, providerType, enforced })
 		.where(eq(tables.ssoProvider.providerId, providerId))
 		.returning({
 			id: tables.ssoProvider.id,
