@@ -108,6 +108,41 @@ function samlEndpoints(providerId: string) {
 	};
 }
 
+const GUID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// samlify validates the SAML response's `<Issuer>` against the IdP's entity id
+// and rejects a mismatch (`ERR_UNMATCH_ISSUER`). The connection form only
+// collects the SSO URL and cert, not the IdP entity id, so we derive it per
+// vendor from the SSO URL — both put a stable identifier in that URL:
+//   - Entra: the response Issuer is always `https://sts.windows.net/<tenant>/`,
+//     and the tenant GUID is a path segment of the login URL (…/<tenant>/saml2).
+//   - Okta: the Issuer is `http://www.okta.com/<appId>`, and `<appId>` (`exk…`)
+//     is a path segment of the app SSO URL.
+// Generic IdPs vary too much to derive, so we leave the entity id unset (the
+// plugin then falls back to `issuer`, which only works if the IdP's entity id
+// happens to equal the SP metadata URL).
+function deriveIdpEntityId(
+	providerType: "okta" | "entra" | "generic",
+	entryPoint: string,
+): string | undefined {
+	let segments: string[];
+	try {
+		segments = new URL(entryPoint).pathname.split("/");
+	} catch {
+		return undefined;
+	}
+	if (providerType === "entra") {
+		const tenant = segments.find((s) => GUID_RE.test(s));
+		return tenant ? `https://sts.windows.net/${tenant}/` : undefined;
+	}
+	if (providerType === "okta") {
+		const appId = segments.find((s) => /^exk[A-Za-z0-9]+$/.test(s));
+		return appId ? `http://www.okta.com/${appId}` : undefined;
+	}
+	return undefined;
+}
+
 const providerSchema = z.object({
 	id: z.string(),
 	providerId: z.string(),
@@ -208,6 +243,7 @@ sso.openapi(register, async (c) => {
 	const { metadataUrl, acsUrl } = samlEndpoints(providerId);
 
 	const isEntra = providerType === "entra";
+	const idpEntityId = deriveIdpEntityId(providerType, entryPoint);
 
 	// Register without `organizationId`: the plugin's org-linking path calls the
 	// Better Auth organization plugin's `member` model, which this app does not
@@ -225,6 +261,10 @@ sso.openapi(register, async (c) => {
 					// Required object; empty lets the plugin derive the SP entity id
 					// from `issuer` (our metadata URL) and the ACS from `callbackUrl`.
 					spMetadata: {},
+					// Tell the plugin the IdP's entity id so response `<Issuer>`
+					// validation passes; without it samlify compares against our SP
+					// URL and rejects every response.
+					...(idpEntityId ? { idpMetadata: { entityID: idpEntityId } } : {}),
 					wantAssertionsSigned: true,
 					// Entra returns its default NameID; don't constrain it (email
 					// comes from the mapped claim). Okta/generic use email NameID.
