@@ -13,8 +13,8 @@ This guide walks an organization admin through connecting **Microsoft Entra ID**
 
 <Callout type="info">
 	SSO & SCIM require the **Enterprise** plan and an organization **owner** or
-	**admin**. See the [SSO & SCIM overview](/features/sso) for prerequisites and
-	how the URLs are derived.
+	**admin**. See the [SSO overview](/features/sso) for prerequisites and how the
+	URLs are derived.
 </Callout>
 
 ## Finding "Enterprise applications" in Entra
@@ -58,8 +58,8 @@ Click **+ New application** → **+ Create your own application**. Name it (e.g.
 <Callout type="warn">
 	Don't search the Entra **gallery** for "LLM Gateway" — there is no gallery
 	listing, so always use **Create your own application → Non-gallery**. You
-	configure SAML and SCIM manually with the URLs from your **SSO & SCIM** page;
-	the steps below cover everything.
+	configure SAML and SCIM manually with the URLs from your **SSO** page; the
+	steps below cover everything.
 </Callout>
 
 </Step>
@@ -82,7 +82,7 @@ Because Entra needs LLM Gateway's URLs and LLM Gateway needs Entra's Login URL a
 <Step>
 ### Choose a connection slug
 
-In LLM Gateway (**Organization → SSO & SCIM → Add a connection**), set **Identity provider** to **Microsoft Entra ID**, then pick a **connection slug** (lowercase letters, numbers, hyphens; `^[a-z0-9-]+$`, up to 64 chars). We recommend the format `<your-org-slug>-<provider>`, e.g. `acme-entra` — the form pre-fills this from your organization name and the selected provider, so you can accept it or edit it. It must be unique across all LLM Gateway organizations, and each organization has exactly one SSO connection. Keep it stable: your SP URLs are built from it.
+In LLM Gateway (**Organization → SSO → Add a connection**), set **Identity provider** to **Microsoft Entra ID**, then pick a **connection slug** (lowercase letters, numbers, hyphens; `^[a-z0-9-]+$`, up to 64 chars). We recommend the format `<your-org-slug>-<provider>`, e.g. `acme-entra` — the form pre-fills this from your organization name and the selected provider, so you can accept it or edit it. It must be unique across all LLM Gateway organizations, and each organization has exactly one SSO connection. Keep it stable: your SP URLs are built from it.
 
 As soon as the slug is set, the form shows your two SP URLs (with the hosted default `https://internal.llmgateway.io`) — copy them from there:
 
@@ -139,7 +139,7 @@ Keep both values handy for the next step.
 <Step>
 ### Create the connection in LLM Gateway
 
-Back on the **SSO & SCIM → Add a connection** form:
+Back on the **SSO → Add a connection** form:
 
 - **Identity provider:** **Microsoft Entra ID** — important, this switches on the Entra claim mapping and relaxes the NameID format
 - **Connection slug:** `acme-entra` (must match the slug whose URLs you pasted into Entra)
@@ -172,7 +172,7 @@ SSO only signs people in. SCIM is what actually adds members to the organization
 <Step>
 ### Generate a SCIM token
 
-In LLM Gateway, on **Organization → SSO & SCIM → Directory sync (SCIM)**, click **Generate SCIM token** and copy it (shown once). The SCIM base URL is shown in the same card — it's `https://internal.llmgateway.io/scim/v2` on the hosted default.
+In LLM Gateway, on **Organization → SSO → Directory sync (SCIM)**, click **Generate SCIM token** and copy it (shown once). The SCIM base URL is shown in the same card — it's `https://internal.llmgateway.io/scim/v2` on the hosted default.
 
 </Step>
 
@@ -206,7 +206,7 @@ Assigned users are created in LLM Gateway and added to the organization (default
 
 ## Group → role mapping (optional)
 
-On the **SSO & SCIM** page, add mappings such as `Acme Admins → admin`. When Entra pushes group membership over SCIM, each member gets the **highest** mapped role among their groups (default `developer`). Owners are never auto-demoted, so you can't accidentally lock yourself out of the owner role.
+On the **SSO** page, add mappings such as `Acme Admins → admin`. When Entra pushes group membership over SCIM, each member gets the **highest** mapped role among their groups (default `developer`). Owners are never auto-demoted, so you can't accidentally lock yourself out of the owner role.
 
 ## Test the login
 

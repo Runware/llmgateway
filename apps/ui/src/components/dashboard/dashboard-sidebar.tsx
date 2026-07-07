@@ -529,7 +529,7 @@ function OrganizationSection({
 					/>
 					<OrgNavItem
 						href={buildOrgUrl("org/sso")}
-						label="SSO & SCIM"
+						label="SSO"
 						icon={AnimatedBuilding2}
 						isActive={isActive("org/sso")}
 						isMobile={isMobile}

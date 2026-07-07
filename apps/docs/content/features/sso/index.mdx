@@ -1,19 +1,19 @@
 ---
-title: SSO & SCIM
+title: SSO
 description: Per-organization SAML single sign-on and SCIM directory provisioning for enterprise teams (Enterprise only).
 icon: ShieldCheck
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-# SSO & SCIM
+# SSO
 
 LLM Gateway supports per-organization **SAML 2.0 single sign-on (SSO)** and **SCIM 2.0 directory provisioning**, so an enterprise team can let members sign in with their corporate identity provider and keep membership in sync automatically.
 
 <Callout type="info">
 	SSO & SCIM are available on the **Enterprise** plan only, and can be
 	configured by an organization **owner** or **admin**. Until the organization
-	is on the Enterprise plan, the **SSO & SCIM** page shows a contact-sales card.
+	is on the Enterprise plan, the **SSO** page shows a contact-sales card.
 	Contact us at contact@llmgateway.io to enable it.
 </Callout>
 
@@ -37,8 +37,8 @@ Everything your identity provider needs is derived from the **management API bas
 	The management API base URL is **not** `api.llmgateway.io` — that host serves
 	the `/v1` chat-completions gateway. SSO/SAML and SCIM live on the management
 	API. You don't need to construct these URLs by hand: the exact,
-	fully-qualified values are shown with copy buttons on the **SSO & SCIM** page
-	and on each connection card.
+	fully-qualified values are shown with copy buttons on the **SSO** page and on
+	each connection card.
 </Callout>
 
 With `API_URL = https://internal.llmgateway.io` and a connection slug of `acme-entra`:

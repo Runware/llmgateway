@@ -368,7 +368,7 @@ export function SsoClient() {
 	return (
 		<div className="flex flex-col space-y-6 p-4 pt-6 md:p-8">
 			<div>
-				<h2 className="text-3xl font-bold tracking-tight">SSO &amp; SCIM</h2>
+				<h2 className="text-3xl font-bold tracking-tight">SSO</h2>
 				<p className="text-muted-foreground">
 					Connect Okta, Microsoft Entra ID, or any SAML 2.0 identity provider so
 					members sign in with SSO, and enable SCIM so users are provisioned

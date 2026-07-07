@@ -1,6 +1,6 @@
 {
-	"title": "SSO & SCIM",
+	"title": "SSO",
 	"icon": "ShieldCheck",
 	"defaultOpen": true,
-	"pages": ["index", "entra"]
+	"pages": ["entra"]
 }
