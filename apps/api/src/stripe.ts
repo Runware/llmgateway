@@ -3946,7 +3946,7 @@ export async function handleSubscriptionUpdated(
 					to: organization.billingEmail,
 					organizationId: organization.id,
 					subject: "Before you go — could we get your feedback?",
-					html: generateDevPlanCancellationFeedbackEmailHtml(organization.name),
+					html: generateDevPlanCancellationFeedbackEmailHtml(),
 				});
 
 				logger.info(
