@@ -14,6 +14,7 @@ import { sendTransactionalEmail } from "@/utils/email.js";
 import { resolveSignupName } from "@/utils/infer-name.js";
 import { getOrCreatePersonalOrg } from "@/utils/personal-org.js";
 
+import { logAuditEvent } from "@llmgateway/audit";
 import { db, eq, tables } from "@llmgateway/db";
 import { logger } from "@llmgateway/logger";
 import { getResendClient, resendAudienceId } from "@llmgateway/shared/email";
@@ -1002,6 +1003,43 @@ The LLM Gateway Team`.trim();
 								headers: { "Content-Type": "application/json" },
 							},
 						);
+					}
+
+					// Audit enterprise SSO sign-ins. These arrive on the plugin's
+					// `/sso/...` callback paths; resolve the org from the SSO provider
+					// whose slug matches one of the user's linked accounts (the same
+					// derivation used for `isSsoUser`). Logged before the org
+					// auto-creation early-returns below so every SSO login is recorded.
+					if (ctx.path.startsWith("/sso/")) {
+						const linkedAccounts = await db.query.account.findMany({
+							where: { userId: { eq: userId } },
+							columns: { providerId: true },
+						});
+						const providerIds = linkedAccounts.map((a) => a.providerId);
+						const provider = providerIds.length
+							? await db.query.ssoProvider.findFirst({
+									where: { providerId: { in: providerIds } },
+									columns: {
+										id: true,
+										providerId: true,
+										organizationId: true,
+									},
+								})
+							: null;
+						if (provider?.organizationId) {
+							await logAuditEvent({
+								organizationId: provider.organizationId,
+								userId,
+								action: "sso.sign_in",
+								resourceType: "sso_session",
+								resourceId: provider.id,
+								metadata: {
+									resourceName: provider.providerId,
+									targetUserId: userId,
+									targetUserEmail: newSession.user.email,
+								},
+							});
+						}
 					}
 
 					// SSO-only enforcement catch-all: reject any session created through

@@ -2677,9 +2677,20 @@ export const auditLogActions = [
 	"sso_role_mapping.create",
 	"sso_role_mapping.delete",
 	"sso_default_projects.update",
+	"sso.sign_in",
 	// SCIM
 	"scim_token.create",
 	"scim_token.revoke",
+	// SCIM directory sync (IdP-initiated)
+	"scim.user.provision",
+	"scim.user.update",
+	"scim.user.activate",
+	"scim.user.deactivate",
+	"scim.user.deprovision",
+	"scim.user.role_change",
+	"scim.group.create",
+	"scim.group.update",
+	"scim.group.delete",
 ] as const;
 
 export const auditLogResourceTypes = [
@@ -2699,7 +2710,10 @@ export const auditLogResourceTypes = [
 	"sso_provider",
 	"sso_role_mapping",
 	"sso_default_project",
+	"sso_session",
 	"scim_token",
+	"scim_user",
+	"scim_group",
 ] as const;
 
 export type AuditLogAction = (typeof auditLogActions)[number];
