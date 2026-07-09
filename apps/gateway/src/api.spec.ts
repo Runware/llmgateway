@@ -3860,6 +3860,346 @@ describe("api", () => {
 		expect(Number(cachedLog?.promptTokens)).toBeGreaterThan(0);
 	});
 
+	test("/v1/chat/completions hybrid prefers provider key over regional env token", async () => {
+		await harness.setProjectMode("hybrid");
+
+		await db.insert(tables.apiKey).values({
+			id: "token-id",
+			token: "real-token",
+			projectId: "project-id",
+			description: "Test API Key",
+			createdBy: "user-id",
+		});
+
+		await db.insert(tables.providerKey).values({
+			id: "provider-key-id",
+			token: "sk-db-key",
+			provider: "alibaba",
+			organizationId: "org-id",
+			baseUrl: mockServerUrl,
+		});
+
+		const previousAlibabaRegionalKey =
+			process.env.LLM_ALIBABA_API_KEY__US_VIRGINIA;
+		const originalFetch = globalThis.fetch;
+		let sawAlibabaRequest = false;
+		const fetchSpy = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementation(async (input, init) => {
+				const url =
+					typeof input === "string"
+						? input
+						: input instanceof URL
+							? input.toString()
+							: input.url;
+
+				if (url.startsWith(mockServerUrl)) {
+					sawAlibabaRequest = true;
+					const headers = new Headers(init?.headers);
+					expect(headers.get("authorization")).toBe("Bearer sk-db-key");
+				}
+
+				return await originalFetch(input as RequestInfo | URL, init);
+			});
+
+		try {
+			process.env.LLM_ALIBABA_API_KEY__US_VIRGINIA = "sk-env-key";
+
+			const res = await app.request("/v1/chat/completions", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer real-token",
+				},
+				body: JSON.stringify({
+					model: "alibaba/qwen-plus:us-virginia",
+					messages: [
+						{
+							role: "user",
+							content: "Hello from hybrid regional routing!",
+						},
+					],
+				}),
+			});
+
+			expect(res.status).toBe(200);
+			expect(sawAlibabaRequest).toBe(true);
+		} finally {
+			fetchSpy.mockRestore();
+			if (previousAlibabaRegionalKey === undefined) {
+				delete process.env.LLM_ALIBABA_API_KEY__US_VIRGINIA;
+			} else {
+				process.env.LLM_ALIBABA_API_KEY__US_VIRGINIA =
+					previousAlibabaRegionalKey;
+			}
+		}
+	});
+
+	test("/v1/chat/completions hybrid prefers keyed provider over credits-backed provider for gemini-2.5-flash-lite", async () => {
+		await harness.setProjectMode("hybrid");
+		await harness.setRoutingMetrics(
+			"gemini-2.5-flash-lite",
+			"google-ai-studio",
+			{
+				uptime: 90,
+				latency: 1200,
+				throughput: 5,
+			},
+		);
+		await harness.setRoutingMetrics("gemini-2.5-flash-lite", "google-vertex", {
+			uptime: 100,
+			latency: 10,
+			throughput: 500,
+		});
+
+		await db.insert(tables.apiKey).values({
+			id: "token-id",
+			token: "real-token",
+			projectId: "project-id",
+			description: "Test API Key",
+			createdBy: "user-id",
+		});
+
+		await db.insert(tables.providerKey).values({
+			id: "provider-key-id",
+			token: "studio-db-key",
+			provider: "google-ai-studio",
+			organizationId: "org-id",
+			baseUrl: mockServerUrl,
+		});
+
+		const previousVertexKey = process.env.LLM_GOOGLE_VERTEX_API_KEY;
+		const previousGoogleCloudProject = process.env.LLM_GOOGLE_CLOUD_PROJECT;
+		const previousVertexBaseUrl = process.env.LLM_GOOGLE_VERTEX_BASE_URL;
+		const requestId = "chat-hybrid-keyed-provider-request-id";
+
+		try {
+			process.env.LLM_GOOGLE_VERTEX_API_KEY = "vertex-env-key";
+			process.env.LLM_GOOGLE_CLOUD_PROJECT = "vertex-project";
+			process.env.LLM_GOOGLE_VERTEX_BASE_URL = mockServerUrl;
+
+			const res = await app.request("/v1/chat/completions", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer real-token",
+					"x-request-id": requestId,
+				},
+				body: JSON.stringify({
+					model: "gemini-2.5-flash-lite",
+					messages: [
+						{
+							role: "user",
+							content: "Hello from hybrid provider routing!",
+						},
+					],
+				}),
+			});
+
+			expect(res.status).toBe(200);
+
+			const json = await res.json();
+			expect(json.metadata.used_provider).toBe("google-ai-studio");
+			expect(json.choices[0].message.content).toContain(
+				"mock Google AI response",
+			);
+
+			const logs = await waitForLogs(1);
+			const completedLog = logs.find((log) => log.requestId === requestId);
+			expect(completedLog?.usedProvider).toBe("google-ai-studio");
+		} finally {
+			if (previousVertexKey === undefined) {
+				delete process.env.LLM_GOOGLE_VERTEX_API_KEY;
+			} else {
+				process.env.LLM_GOOGLE_VERTEX_API_KEY = previousVertexKey;
+			}
+			if (previousGoogleCloudProject === undefined) {
+				delete process.env.LLM_GOOGLE_CLOUD_PROJECT;
+			} else {
+				process.env.LLM_GOOGLE_CLOUD_PROJECT = previousGoogleCloudProject;
+			}
+			if (previousVertexBaseUrl === undefined) {
+				delete process.env.LLM_GOOGLE_VERTEX_BASE_URL;
+			} else {
+				process.env.LLM_GOOGLE_VERTEX_BASE_URL = previousVertexBaseUrl;
+			}
+		}
+	});
+
+	test("/v1/chat/completions hybrid escapes to credits provider when keyed provider fails", async () => {
+		await harness.setProjectMode("hybrid");
+		await harness.setRoutingMetrics(
+			"gemini-2.5-flash-lite",
+			"google-ai-studio",
+			{
+				uptime: 100,
+				latency: 100,
+				throughput: 100,
+			},
+		);
+		await harness.setRoutingMetrics("gemini-2.5-flash-lite", "google-vertex", {
+			uptime: 100,
+			latency: 100,
+			throughput: 100,
+		});
+
+		await db.insert(tables.apiKey).values({
+			id: "token-id",
+			token: "real-token",
+			projectId: "project-id",
+			description: "Test API Key",
+			createdBy: "user-id",
+		});
+
+		// Keyed provider whose upstream is unreachable: routing prefers it, the
+		// request fails with a network error, and the retry loop must escape to
+		// the credits-backed provider via its demoted score entry.
+		await db.insert(tables.providerKey).values({
+			id: "provider-key-id",
+			token: "studio-db-key",
+			provider: "google-ai-studio",
+			organizationId: "org-id",
+			baseUrl: "http://127.0.0.1:9",
+		});
+
+		const previousVertexKey = process.env.LLM_GOOGLE_VERTEX_API_KEY;
+		const previousGoogleCloudProject = process.env.LLM_GOOGLE_CLOUD_PROJECT;
+		const previousVertexBaseUrl = process.env.LLM_GOOGLE_VERTEX_BASE_URL;
+
+		try {
+			process.env.LLM_GOOGLE_VERTEX_API_KEY = "vertex-test-token";
+			process.env.LLM_GOOGLE_CLOUD_PROJECT = "vertex-project";
+			process.env.LLM_GOOGLE_VERTEX_BASE_URL = mockServerUrl;
+
+			const res = await app.request("/v1/chat/completions", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer real-token",
+				},
+				body: JSON.stringify({
+					model: "gemini-2.5-flash-lite",
+					messages: [
+						{ role: "user", content: "Hybrid dead key escape request" },
+					],
+				}),
+			});
+
+			expect(res.status).toBe(200);
+			const json = await res.json();
+			expect(json.metadata.used_provider).toBe("google-vertex");
+		} finally {
+			if (previousVertexKey === undefined) {
+				delete process.env.LLM_GOOGLE_VERTEX_API_KEY;
+			} else {
+				process.env.LLM_GOOGLE_VERTEX_API_KEY = previousVertexKey;
+			}
+			if (previousGoogleCloudProject === undefined) {
+				delete process.env.LLM_GOOGLE_CLOUD_PROJECT;
+			} else {
+				process.env.LLM_GOOGLE_CLOUD_PROJECT = previousGoogleCloudProject;
+			}
+			if (previousVertexBaseUrl === undefined) {
+				delete process.env.LLM_GOOGLE_VERTEX_BASE_URL;
+			} else {
+				process.env.LLM_GOOGLE_VERTEX_BASE_URL = previousVertexBaseUrl;
+			}
+		}
+	});
+
+	test("/v1/chat/completions hybrid overflows to credits provider when keyed provider is rate limited", async () => {
+		await harness.setProjectMode("hybrid");
+		await harness.setRoutingMetrics(
+			"gemini-2.5-flash-lite",
+			"google-ai-studio",
+			{
+				uptime: 100,
+				latency: 100,
+				throughput: 100,
+			},
+		);
+		await harness.setRoutingMetrics("gemini-2.5-flash-lite", "google-vertex", {
+			uptime: 100,
+			latency: 100,
+			throughput: 100,
+		});
+
+		await db.insert(tables.apiKey).values({
+			id: "token-id",
+			token: "real-token",
+			projectId: "project-id",
+			description: "Test API Key",
+			createdBy: "user-id",
+		});
+
+		await db.insert(tables.providerKey).values({
+			id: "provider-key-id",
+			token: "studio-db-key",
+			provider: "google-ai-studio",
+			organizationId: "org-id",
+			baseUrl: mockServerUrl,
+		});
+
+		// Org-level RPM cap on the keyed provider: the first request consumes the
+		// only slot, so the second must overflow to the credits-backed provider.
+		await db.insert(tables.rateLimit).values({
+			id: "rate-limit-studio",
+			organizationId: "org-id",
+			provider: "google-ai-studio",
+			model: "gemini-2.5-flash-lite",
+			maxRpm: 1,
+		});
+
+		const previousVertexKey = process.env.LLM_GOOGLE_VERTEX_API_KEY;
+		const previousGoogleCloudProject = process.env.LLM_GOOGLE_CLOUD_PROJECT;
+		const previousVertexBaseUrl = process.env.LLM_GOOGLE_VERTEX_BASE_URL;
+
+		try {
+			process.env.LLM_GOOGLE_VERTEX_API_KEY = "vertex-test-token";
+			process.env.LLM_GOOGLE_CLOUD_PROJECT = "vertex-project";
+			process.env.LLM_GOOGLE_VERTEX_BASE_URL = mockServerUrl;
+
+			const makeRequest = (content: string) =>
+				app.request("/v1/chat/completions", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: "Bearer real-token",
+					},
+					body: JSON.stringify({
+						model: "gemini-2.5-flash-lite",
+						messages: [{ role: "user", content }],
+					}),
+				});
+
+			const firstRes = await makeRequest("Hybrid rate limit request one");
+			expect(firstRes.status).toBe(200);
+			const firstJson = await firstRes.json();
+			expect(firstJson.metadata.used_provider).toBe("google-ai-studio");
+
+			const secondRes = await makeRequest("Hybrid rate limit request two");
+			expect(secondRes.status).toBe(200);
+			const secondJson = await secondRes.json();
+			expect(secondJson.metadata.used_provider).toBe("google-vertex");
+		} finally {
+			if (previousVertexKey === undefined) {
+				delete process.env.LLM_GOOGLE_VERTEX_API_KEY;
+			} else {
+				process.env.LLM_GOOGLE_VERTEX_API_KEY = previousVertexKey;
+			}
+			if (previousGoogleCloudProject === undefined) {
+				delete process.env.LLM_GOOGLE_CLOUD_PROJECT;
+			} else {
+				process.env.LLM_GOOGLE_CLOUD_PROJECT = previousGoogleCloudProject;
+			}
+			if (previousVertexBaseUrl === undefined) {
+				delete process.env.LLM_GOOGLE_VERTEX_BASE_URL;
+			} else {
+				process.env.LLM_GOOGLE_VERTEX_BASE_URL = previousVertexBaseUrl;
+			}
+		}
+	});
+
 	// Non-streaming responses are cached in OpenAI format, so the stored
 	// finish_reason is normalized (e.g. "stop"). The cache-hit log must classify
 	// it using the OpenAI mapping, not the upstream provider's native format —
