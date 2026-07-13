@@ -881,6 +881,74 @@ describe("prepareRequestBody - reasoning_effort none", () => {
 	});
 });
 
+describe("prepareRequestBody - reasoning_effort max", () => {
+	async function prepare(options: {
+		provider: Parameters<typeof prepareRequestBody>[0];
+		model: string;
+		useResponsesApi?: boolean;
+	}) {
+		return (await prepareRequestBody(
+			options.provider,
+			options.model,
+			null,
+			options.model,
+			[{ role: "user", content: "Hello!" }],
+			false, // stream
+			undefined, // temperature
+			undefined, // max_tokens
+			undefined, // top_p
+			undefined, // frequency_penalty
+			undefined, // presence_penalty
+			undefined, // response_format
+			undefined, // tools
+			undefined, // tool_choice
+			"max", // reasoning_effort
+			true, // supportsReasoning
+			false, // isProd
+			20,
+			null,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			options.useResponsesApi ?? false,
+		)) as any;
+	}
+
+	test("forwards max to OpenAI chat completions verbatim", async () => {
+		const requestBody = await prepare({
+			provider: "openai",
+			model: "gpt-5.6-sol",
+		});
+		expect(requestBody.reasoning_effort).toBe("max");
+	});
+
+	test("forwards max to OpenAI Responses API verbatim", async () => {
+		const requestBody = await prepare({
+			provider: "openai",
+			model: "gpt-5.6-terra",
+			useResponsesApi: true,
+		});
+		expect(requestBody.reasoning.effort).toBe("max");
+	});
+
+	test("forwards max unchanged for models without a max tier (provider rejects it)", async () => {
+		const requestBody = await prepare({ provider: "openai", model: "gpt-5.5" });
+		expect(requestBody.reasoning_effort).toBe("max");
+	});
+
+	test("forwards max unchanged on the Responses API for models without a max tier", async () => {
+		const requestBody = await prepare({
+			provider: "openai",
+			model: "gpt-5.5",
+			useResponsesApi: true,
+		});
+		expect(requestBody.reasoning.effort).toBe("max");
+	});
+});
+
 describe("prepareRequestBody - xAI reasoning_effort", () => {
 	async function prepare(effort: "low" | "medium" | "high" | "xhigh") {
 		return (await prepareRequestBody(
@@ -1188,7 +1256,7 @@ describe("prepareRequestBody - Google AI Studio", () => {
 		});
 	});
 
-	test('aliases "max" effort to "high" for providers without a max tier', async () => {
+	test('maps "max" effort to the top Google thinking budget', async () => {
 		const requestBody = (await prepareRequestBody(
 			"google-ai-studio",
 			"gemini-2.5-pro",
@@ -1209,10 +1277,10 @@ describe("prepareRequestBody - Google AI Studio", () => {
 			false,
 		)) as any;
 
-		// "max" has no Google tier, so it aliases to "high" (24576) rather than
-		// falling through to the medium default (8192).
+		// Google has no effort enum, so "max" shares xhigh's top thinking
+		// budget rather than falling through to the medium default (8192).
 		expect(requestBody.generationConfig.thinkingConfig.thinkingBudget).toBe(
-			24576,
+			65536,
 		);
 	});
 

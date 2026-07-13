@@ -995,18 +995,12 @@ export async function prepareRequestBody(
 		verbosity = undefined;
 	}
 
-	// `max` is Anthropic's top effort tier (above `xhigh`). Providers without a
-	// native `max` level treat it as an alias for `high` (e.g. OpenAI, Google,
-	// DeepSeek). Anthropic-family branches use `reasoning_effort` directly and
-	// handle `max` natively, so they intentionally do not use this alias.
-	const genericReasoningEffort:
-		| "none"
-		| "minimal"
-		| "low"
-		| "medium"
-		| "high"
-		| "xhigh"
-		| undefined = reasoning_effort === "max" ? "high" : reasoning_effort;
+	// Effort tiers are forwarded to the provider as-is — there is no
+	// downgrading of unsupported values (e.g. `max` on a model that tops out
+	// at `xhigh`). Providers reject unsupported values with a 4xx, and the
+	// values each mapping accepts are published as `reasoningEfforts` in the
+	// model catalog. Providers that take a thinking budget instead of an
+	// effort enum (Anthropic, Google) translate each tier to a budget below.
 
 	// Handle OpenAI / Azure image generation models (e.g. gpt-image-2)
 	if (
@@ -1638,7 +1632,7 @@ export async function prepareRequestBody(
 						? reasoning_effort === "xhigh" || reasoning_effort === "max"
 							? "xhigh"
 							: "high"
-						: (genericReasoningEffort ?? defaultEffort);
+						: (reasoning_effort ?? defaultEffort);
 
 				// Muse Spark reasons adaptively when effort is omitted and rejects
 				// "none", so only forward an effort the caller explicitly set.
@@ -1648,8 +1642,8 @@ export async function prepareRequestBody(
 					reasoning:
 						usedProvider === "meta"
 							? {
-									...(genericReasoningEffort !== undefined && {
-										effort: genericReasoningEffort,
+									...(reasoning_effort !== undefined && {
+										effort: reasoning_effort,
 									}),
 									summary: "detailed",
 								}
@@ -1899,7 +1893,7 @@ export async function prepareRequestBody(
 								? reasoning_effort
 								: "high";
 					} else {
-						requestBody.reasoning_effort = genericReasoningEffort;
+						requestBody.reasoning_effort = reasoning_effort;
 					}
 				}
 				if (verbosity !== undefined) {
@@ -2335,10 +2329,9 @@ export async function prepareRequestBody(
 				}
 				if (reasoning_effort !== undefined) {
 					const reasoningEffort =
-						genericReasoningEffort === "minimal" ||
-						genericReasoningEffort === "xhigh"
+						reasoning_effort === "minimal" || reasoning_effort === "xhigh"
 							? "low"
-							: genericReasoningEffort;
+							: reasoning_effort;
 					requestBody.reasoning = {
 						effort: reasoningEffort,
 					};
@@ -3027,7 +3020,7 @@ export async function prepareRequestBody(
 						// Google maps this internally to thinkingLevel, so exact token control isn't guaranteed
 						requestBody.generationConfig.thinkingConfig.thinkingBudget =
 							reasoning_max_tokens;
-					} else if (genericReasoningEffort !== undefined) {
+					} else if (reasoning_effort !== undefined) {
 						const getThinkingBudget = (effort: string) => {
 							switch (effort) {
 								case "minimal":
@@ -3037,6 +3030,9 @@ export async function prepareRequestBody(
 								case "high":
 									return 24576;
 								case "xhigh":
+								case "max":
+									// Google has no tier above xhigh, so max shares its
+									// top thinking budget.
 									return 65536;
 								case "medium":
 								default:
@@ -3044,7 +3040,7 @@ export async function prepareRequestBody(
 							}
 						};
 						requestBody.generationConfig.thinkingConfig.thinkingBudget =
-							getThinkingBudget(genericReasoningEffort);
+							getThinkingBudget(reasoning_effort);
 					}
 				}
 			}
@@ -3167,7 +3163,7 @@ export async function prepareRequestBody(
 				requestBody.presence_penalty = presence_penalty;
 			}
 			if (reasoning_effort !== undefined) {
-				requestBody.reasoning_effort = genericReasoningEffort;
+				requestBody.reasoning_effort = reasoning_effort;
 			}
 			break;
 		}
@@ -3263,7 +3259,7 @@ export async function prepareRequestBody(
 					supported.length === 0 ||
 					supported.includes("reasoning_effort")
 				) {
-					requestBody.reasoning_effort = genericReasoningEffort;
+					requestBody.reasoning_effort = reasoning_effort;
 				}
 			}
 			if (usedProvider === "minimax" && supportsReasoning) {

@@ -215,7 +215,7 @@ const anthropicRequestSchema = z.object({
 		.object({
 			// Matches the chat completions reasoning-effort enum. Claude Code emits
 			// the full range (including `xhigh` and `max`), so accept all of them;
-			// `max` is normalized to `high` downstream for client compatibility.
+			// values are forwarded to the provider as-is.
 			effort: z
 				.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
 				.optional(),
