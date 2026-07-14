@@ -1531,6 +1531,11 @@ export const log = pgTable(
 				apiKeyHash?: string;
 				logId?: string;
 			}>;
+			filteredProviders?: Array<{
+				providerId: string;
+				reasons: string[];
+			}>;
+			strippedParameters?: string[];
 		}>(),
 		processedAt: timestamp(),
 		rawRequest: jsonb(),

@@ -227,6 +227,10 @@ import { convertAwsEventStreamToSSE } from "./tools/parse-aws-eventstream.js";
 import { parseModelInput } from "./tools/parse-model-input.js";
 import { parseProviderResponse } from "./tools/parse-provider-response.js";
 import {
+	getProviderFilterReasons,
+	recordFilteredProvider,
+} from "./tools/provider-filter-reasons.js";
+import {
 	flushTaggedStreamingRemainder,
 	splitTaggedStreamingContentChunk,
 	splitReasoningFromTaggedContent,
@@ -272,13 +276,6 @@ if (_derivedProjectId && !process.env.LLM_VERTEX_ANTHROPIC_PROJECT) {
 	process.env.LLM_VERTEX_ANTHROPIC_PROJECT = _derivedProjectId;
 }
 
-/**
- * Filter expanded region entries to only those with available API keys.
- * - Non-regional mappings (no region) pass through unchanged.
- * - The default region for a provider always passes (uses the base env key).
- * - Non-default regions only pass if a region-specific env key exists
- *   (e.g. LLM_ALIBABA_API_KEY__US_VIRGINIA).
- */
 /**
  * Inject stream=true and partial_images=1 into an OpenAI/Azure gpt-image-*
  * request body so the upstream call uses SSE. The single partial keeps the
@@ -579,6 +576,7 @@ function filterEligibleModelProviders(
 		n?: number;
 		stream?: boolean;
 	},
+	filteredOut?: Array<{ providerId: string; reasons: string[] }>,
 ): ProviderModelMapping[] {
 	return availableModelProviders.filter((provider) => {
 		if (
@@ -595,89 +593,27 @@ function filterEligibleModelProviders(
 			return false;
 		}
 
-		if (options.webSearchTool && provider.webSearch !== true) {
+		const reasons = getProviderFilterReasons(provider, options);
+		if (reasons.length > 0) {
+			if (filteredOut) {
+				recordFilteredProvider(filteredOut, provider.providerId, reasons);
+			}
 			return false;
 		}
 
-		// Exclude mappings that can't natively serve n > 1 so routing skips
-		// over them instead of selecting one and failing the post-selection
-		// supportsN guard. The post-guard stays as a safety net. Mappings
-		// whose upstream caps n (maxN) or rejects n > 1 on streaming
-		// (supportsNStreaming === false, e.g. Google) are excluded the same way.
-		if (options.n !== undefined && options.n > 1) {
-			if (provider.supportsN !== true) {
+		// Prefer non-reasoning variants when the request does not ask for
+		// reasoning ("none" means "no reasoning").
+		if (
+			options.reasoningEffort === undefined ||
+			options.reasoningEffort === "none"
+		) {
+			const hasNonReasoningAlternative = options.allProviderVariants.some(
+				(p) => p.providerId === provider.providerId && p.reasoning !== true,
+			);
+
+			if (hasNonReasoningAlternative && provider.reasoning === true) {
 				return false;
 			}
-			if (provider.maxN !== undefined && options.n > provider.maxN) {
-				return false;
-			}
-			if (options.stream && provider.supportsNStreaming === false) {
-				return false;
-			}
-		}
-
-		if (
-			options.responseFormatType === "json_object" ||
-			options.responseFormatType === "json_schema"
-		) {
-			if (provider.jsonOutput !== true) {
-				return false;
-			}
-		}
-
-		if (
-			options.responseFormatType === "json_schema" &&
-			provider.jsonOutputSchema !== true
-		) {
-			return false;
-		}
-
-		if (options.hasImages && provider.vision !== true) {
-			return false;
-		}
-
-		if (options.hasAudio && provider.audio !== true) {
-			return false;
-		}
-
-		if (
-			options.hasAudio &&
-			options.audioFormats &&
-			options.audioFormats.length > 0 &&
-			!options.audioFormats.every((fmt) =>
-				googleProviderSupportsAudioFormat(provider.providerId, fmt),
-			)
-		) {
-			return false;
-		}
-
-		if (options.hasDocuments && provider.document !== true) {
-			return false;
-		}
-
-		if (
-			options.maxTokens !== undefined &&
-			provider.maxOutput !== undefined &&
-			options.maxTokens > provider.maxOutput
-		) {
-			return false;
-		}
-
-		// "none" means "no reasoning", so it doesn't require a reasoning-capable
-		// provider. Let it fall through so non-reasoning variants stay eligible.
-		if (
-			options.reasoningEffort !== undefined &&
-			options.reasoningEffort !== "none"
-		) {
-			return provider.reasoning === true;
-		}
-
-		const hasNonReasoningAlternative = options.allProviderVariants.some(
-			(p) => p.providerId === provider.providerId && p.reasoning !== true,
-		);
-
-		if (hasNonReasoningAlternative && provider.reasoning === true) {
-			return false;
 		}
 
 		return true;
@@ -2985,8 +2921,30 @@ chat.openapi(completions, async (c) => {
 
 		let selectedModel: ModelDefinition | undefined;
 		let selectedProviders: any[] = [];
+		let selectedFilteredProviders: Array<{
+			providerId: string;
+			reasons: string[];
+		}> = [];
 		let lowestPrice = Number.MAX_VALUE;
 		const now = new Date(); // Cache current time for deprecation checks
+		const autoFilterOpts = {
+			webSearchTool: !!webSearchTool,
+			responseFormatType: response_format?.type,
+			hasImages,
+			hasAudio,
+			audioFormats,
+			hasDocuments,
+			// web_search is extracted from tools above and can leave an empty
+			// array; an empty tools list must not require function-tool support.
+			hasTools:
+				(tools !== undefined && tools.length > 0) || tool_choice !== undefined,
+			reasoningEffort: reasoning_effort,
+			reasoningMaxTokens: reasoning_max_tokens,
+			noReasoning: no_reasoning,
+			maxTokens: max_tokens,
+			n,
+			stream,
+		};
 
 		// Track whether the compliance policy is what removed every candidate, so
 		// a no-selection result fails closed with the policy 403 + security event
@@ -3095,6 +3053,10 @@ chat.openapi(completions, async (c) => {
 				}
 			}
 			// Filter by context size requirement, reasoning capability, and deprecation status
+			const filteredOutForModel: Array<{
+				providerId: string;
+				reasons: string[];
+			}> = [];
 			const suitableProviders = complianceFilteredProviders.filter(
 				(provider) => {
 					// Skip deprecated provider mappings
@@ -3104,110 +3066,24 @@ chat.openapi(completions, async (c) => {
 
 					// Use the provider's context size, defaulting to a reasonable value if not specified
 					const modelContextSize = provider.contextSize ?? 8192;
-					const contextSizeMet = modelContextSize >= requiredContextSize;
-
-					// If no_reasoning is true, exclude reasoning models
-					if (no_reasoning && provider.reasoning === true) {
+					if (modelContextSize < requiredContextSize) {
+						recordFilteredProvider(filteredOutForModel, provider.providerId, [
+							"context_size too small",
+						]);
 						return false;
 					}
 
-					// Check reasoning capability if reasoning_effort is specified.
-					// "none" means "no reasoning", so it doesn't require a
-					// reasoning-capable provider.
-					if (
-						reasoning_effort !== undefined &&
-						reasoning_effort !== "none" &&
-						provider.reasoning !== true
-					) {
+					const reasons = getProviderFilterReasons(provider, autoFilterOpts);
+					if (reasons.length > 0) {
+						recordFilteredProvider(
+							filteredOutForModel,
+							provider.providerId,
+							reasons,
+						);
 						return false;
 					}
 
-					// Check reasoning.max_tokens support if specified
-					if (
-						reasoning_max_tokens !== undefined &&
-						provider.reasoningMaxTokens !== true
-					) {
-						return false;
-					}
-
-					// Check tool capability if tools or tool_choice is specified
-					if (
-						(tools !== undefined || tool_choice !== undefined) &&
-						provider.tools !== true
-					) {
-						return false;
-					}
-
-					// Check web search capability if web search tool is requested
-					if (webSearchTool && provider.webSearch !== true) {
-						return false;
-					}
-
-					// Skip mappings that don't advertise supportsN when n > 1 so
-					// auto-routing doesn't pick one and trip the post-selection
-					// 400 guard. The post-guard stays as a safety net. Also skip
-					// mappings whose upstream caps n (maxN) or rejects n > 1 on
-					// streaming (supportsNStreaming === false, e.g. Google).
-					if (n !== undefined && n > 1) {
-						if (provider.supportsN !== true) {
-							return false;
-						}
-						if (provider.maxN !== undefined && n > provider.maxN) {
-							return false;
-						}
-						if (stream && provider.supportsNStreaming === false) {
-							return false;
-						}
-					}
-					// Check JSON output capability if json_object or json_schema response format is requested
-					if (
-						response_format?.type === "json_object" ||
-						response_format?.type === "json_schema"
-					) {
-						if (provider.jsonOutput !== true) {
-							return false;
-						}
-					}
-
-					// Check JSON schema output capability if json_schema response format is requested
-					if (response_format?.type === "json_schema") {
-						if (provider.jsonOutputSchema !== true) {
-							return false;
-						}
-					}
-
-					// Check vision capability if images are present in messages
-					if (hasImages && provider.vision !== true) {
-						return false;
-					}
-
-					if (hasAudio && provider.audio !== true) {
-						return false;
-					}
-
-					if (
-						hasAudio &&
-						audioFormats.length > 0 &&
-						!audioFormats.every((fmt) =>
-							googleProviderSupportsAudioFormat(provider.providerId, fmt),
-						)
-					) {
-						return false;
-					}
-
-					if (hasDocuments && provider.document !== true) {
-						return false;
-					}
-
-					if (
-						max_tokens !== undefined &&
-						provider.maxOutput !== undefined &&
-						max_tokens > provider.maxOutput
-					) {
-						return false;
-					}
-
-					return contextSizeMet;
+					return true;
 				},
 			);
 			const preferredSuitableProviders = preferProvidersWithKeys(
@@ -3233,6 +3109,7 @@ chat.openapi(completions, async (c) => {
 						lowestPrice = totalPrice;
 						selectedModel = modelDef;
 						selectedProviders = preferredSuitableProviders;
+						selectedFilteredProviders = filteredOutForModel;
 					}
 				}
 			}
@@ -3287,6 +3164,9 @@ chat.openapi(completions, async (c) => {
 				routingMetadata = {
 					...cheapestResult.metadata,
 					...getNoFallbackRoutingMetadata(noFallback, xNoFallbackHeaderSet),
+					...(selectedFilteredProviders.length > 0
+						? { filteredProviders: selectedFilteredProviders }
+						: {}),
 				};
 			} else {
 				// Fallback to first available provider if price comparison fails
@@ -3859,6 +3739,10 @@ chat.openapi(completions, async (c) => {
 				// Filter model providers to only those available (excluding the low-uptime one)
 				// If web search is requested, also filter to providers that support it
 				// If JSON output is requested, also filter to providers that support it
+				const filteredOutProvidersFallback: Array<{
+					providerId: string;
+					reasons: string[];
+				}> = [];
 				const availableModelProviders = filterEligibleModelProviders(
 					preferConcreteRegionalMappings(
 						applyPinnedDefaultRegions(expandedIamFilteredModelProviders, {
@@ -3880,6 +3764,7 @@ chat.openapi(completions, async (c) => {
 						n,
 						stream,
 					},
+					filteredOutProvidersFallback,
 				).filter(
 					(provider) =>
 						!(
@@ -4016,6 +3901,9 @@ chat.openapi(completions, async (c) => {
 										noFallback,
 										xNoFallbackHeaderSet,
 									),
+									...(filteredOutProvidersFallback.length > 0
+										? { filteredProviders: filteredOutProvidersFallback }
+										: {}),
 								};
 								const preferredBetterUptimeSet = new Set(
 									preferredBetterUptimeProviders,
@@ -4086,9 +3974,14 @@ chat.openapi(completions, async (c) => {
 				maxTokens: max_tokens,
 				reasoningEffort: reasoning_effort,
 			};
+			const filteredOutProvidersDirect: Array<{
+				providerId: string;
+				reasons: string[];
+			}> = [];
 			const availableModelProviders = filterEligibleModelProviders(
 				preparedModelProviders,
 				{ ...eligibilityOptions, n, stream },
+				filteredOutProvidersDirect,
 			);
 
 			if (availableModelProviders.length === 0) {
@@ -4280,6 +4173,9 @@ chat.openapi(completions, async (c) => {
 							selectedProvider: usedProvider,
 							selectionReason: hysteresisSelectionReason,
 							...getNoFallbackRoutingMetadata(noFallback, xNoFallbackHeaderSet),
+							...(filteredOutProvidersDirect.length > 0
+								? { filteredProviders: filteredOutProvidersDirect }
+								: {}),
 						},
 						contentFilterMatched,
 						contentFilterRoutingExcludedProviders,
@@ -6025,6 +5921,7 @@ chat.openapi(completions, async (c) => {
 	};
 
 	// Strip unsupported parameters based on model's supportedParameters
+	const strippedParameters: string[] = [];
 	if (finalModelInfo) {
 		const providerMapping = finalModelInfo.providers.find(
 			(p) => p.providerId === usedProvider && p.region === usedRegion,
@@ -6033,26 +5930,35 @@ chat.openapi(completions, async (c) => {
 		if (supported && supported.length > 0) {
 			if (temperature !== undefined && !supported.includes("temperature")) {
 				temperature = undefined;
+				strippedParameters.push("temperature");
 			}
 			if (top_p !== undefined && !supported.includes("top_p")) {
 				top_p = undefined;
+				strippedParameters.push("top_p");
 			}
 			if (
 				frequency_penalty !== undefined &&
 				!supported.includes("frequency_penalty")
 			) {
 				frequency_penalty = undefined;
+				strippedParameters.push("frequency_penalty");
 			}
 			if (
 				presence_penalty !== undefined &&
 				!supported.includes("presence_penalty")
 			) {
 				presence_penalty = undefined;
+				strippedParameters.push("presence_penalty");
 			}
 			if (max_tokens !== undefined && !supported.includes("max_tokens")) {
 				max_tokens = undefined;
+				strippedParameters.push("max_tokens");
 			}
 		}
+	}
+	// Attach stripped parameters to routing metadata
+	if (strippedParameters.length > 0 && routingMetadata) {
+		routingMetadata.strippedParameters = strippedParameters;
 	}
 
 	// Anthropic does not allow temperature and top_p to be set simultaneously
@@ -6423,6 +6329,14 @@ chat.openapi(completions, async (c) => {
 		presence_penalty = ctx.presence_penalty;
 		usedRegion = ctx.usedRegion;
 		routingMetadata = withUsedApiKeyHash(routingMetadata, usedApiKeyHash);
+		if (ctx.strippedParameters.length > 0 && routingMetadata) {
+			routingMetadata.strippedParameters = [
+				...new Set([
+					...(routingMetadata.strippedParameters ?? []),
+					...ctx.strippedParameters,
+				]),
+			];
+		}
 	}
 
 	async function tryResolveAlternateKeyForCurrentProvider(
