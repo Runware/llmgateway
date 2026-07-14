@@ -16,8 +16,10 @@ import {
 	eq,
 	getApiKeyCurrentPeriodState,
 	isValidApiKeyPeriodDuration,
+	resolveEffectiveMemberBudget,
 	shortid,
 	tables,
+	validateApiKeyLimitsWithinMemberBudget,
 	type ApiKeyPeriodDurationUnit,
 	type InferSelectModel,
 } from "@llmgateway/db";
@@ -378,12 +380,15 @@ const listApiKeysQuerySchema = z.object({
 	}),
 });
 
-// Schema for updating an API key status
+// Schema for updating an API key status and/or metadata
 const updateApiKeyStatusSchema = z.object({
-	status: z.enum(["active", "inactive"]),
+	status: z.enum(["active", "inactive"]).optional(),
 	expiresAt: z.string().datetime().nullable().optional().openapi({
 		description:
 			"ISO 8601 timestamp when the key expires (TTL). Required to reactivate a key whose TTL has already passed; pass null to remove the TTL. Omit to leave the existing expiry unchanged.",
+	}),
+	description: z.string().trim().min(1).max(255).optional().openapi({
+		description: "New display name for the API key. Omit to leave unchanged.",
 	}),
 });
 
@@ -696,7 +701,10 @@ keysApi.openapi(deletePlatformKey, async (c) => {
 		platformKey.projectId,
 	);
 
-	await db
+	// Delete through the cached client so onMutate busts the gateway's cached
+	// token lookups; otherwise the deleted key keeps authenticating until the
+	// cache expires.
+	await cdb
 		.update(tables.apiKey)
 		.set({
 			status: "deleted",
@@ -790,6 +798,18 @@ export const createIamRuleSchema = z.object({
 	status: iamRuleStatusEnum.default("active"),
 });
 
+// Org-wide cap on active developer API keys. An explicit `organization.apiKeyLimit`
+// override (set by admins) always takes precedence over these plan defaults.
+export function resolveApiKeyLimit(
+	plan: string | null | undefined,
+	apiKeyLimit: number | null | undefined,
+): number {
+	if (apiKeyLimit !== null && apiKeyLimit !== undefined) {
+		return apiKeyLimit;
+	}
+	return plan === "enterprise" ? 500 : plan === "pro" ? 20 : 5;
+}
+
 // Create a new API key
 const create = createRoute({
 	method: "post",
@@ -829,6 +849,76 @@ export interface CreateApiKeyInput {
 	periodUsageDurationValue?: number | null;
 	periodUsageDurationUnit?: ApiKeyPeriodDurationUnit | null;
 	expiresAt?: Date | string | null;
+}
+
+interface MemberBudgetColumns {
+	role: "owner" | "admin" | "developer";
+	maxApiKeys: number | null;
+	usageLimit: string | null;
+	periodUsageLimit: string | null;
+	periodUsageDurationValue: number | null;
+	periodUsageDurationUnit: ApiKeyPeriodDurationUnit | null;
+}
+
+interface OrgDeveloperDefaultColumns {
+	defaultDeveloperMaxApiKeys: number | null;
+	defaultDeveloperUsageLimit: string | null;
+	defaultDeveloperPeriodUsageLimit: string | null;
+	defaultDeveloperPeriodUsageDurationValue: number | null;
+	defaultDeveloperPeriodUsageDurationUnit: ApiKeyPeriodDurationUnit | null;
+}
+
+/**
+ * Reject a proposed API-key limit that would exceed the key owner's effective
+ * member budget (their own caps, or the org-wide default developer caps that
+ * SSO-provisioned members inherit). The gateway enforces the member budget
+ * first at request time regardless, but keeping a key's own limit at or below
+ * the member limit keeps the configured numbers honest. No-op when the member
+ * has no budget.
+ */
+function assertApiKeyLimitsWithinMemberBudget(
+	membership: MemberBudgetColumns | null | undefined,
+	organization: OrgDeveloperDefaultColumns,
+	keyLimits: ApiKeyLimitConfig,
+): void {
+	if (!membership) {
+		return;
+	}
+
+	const budget = resolveEffectiveMemberBudget(
+		membership.role,
+		{
+			maxApiKeys: membership.maxApiKeys,
+			usageLimit: membership.usageLimit,
+			periodUsageLimit: membership.periodUsageLimit,
+			periodUsageDurationValue: membership.periodUsageDurationValue,
+			periodUsageDurationUnit: membership.periodUsageDurationUnit,
+		},
+		{
+			defaultDeveloperMaxApiKeys: organization.defaultDeveloperMaxApiKeys,
+			defaultDeveloperUsageLimit: organization.defaultDeveloperUsageLimit,
+			defaultDeveloperPeriodUsageLimit:
+				organization.defaultDeveloperPeriodUsageLimit,
+			defaultDeveloperPeriodUsageDurationValue:
+				organization.defaultDeveloperPeriodUsageDurationValue,
+			defaultDeveloperPeriodUsageDurationUnit:
+				organization.defaultDeveloperPeriodUsageDurationUnit,
+		},
+	);
+
+	const error = validateApiKeyLimitsWithinMemberBudget(
+		{
+			usageLimit: keyLimits.usageLimit,
+			periodUsageLimit: keyLimits.periodUsageLimit,
+			periodUsageDurationValue: keyLimits.periodUsageDurationValue,
+			periodUsageDurationUnit: keyLimits.periodUsageDurationUnit,
+		},
+		budget,
+	);
+
+	if (error) {
+		throw new HTTPException(400, { message: error });
+	}
 }
 
 export async function createApiKeyForProject(
@@ -883,22 +973,90 @@ export async function createApiKeyForProject(
 		});
 	}
 
-	const existingApiKeys = await db.query.apiKey.findMany({
+	const orgProjects = await db.query.project.findMany({
+		where: { organizationId: { eq: project.organization.id } },
+		columns: { id: true },
+	});
+	const orgProjectIds = orgProjects.map((p) => p.id);
+
+	// Org-wide cap on active developer API keys across all of the org's projects.
+	// Platform and hidden LLM SDK aggregate keys are excluded (keyType: "user").
+	const orgActiveApiKeys = await db.query.apiKey.findMany({
 		where: {
-			projectId: { eq: projectId },
-			status: { ne: "deleted" },
-			// Only count developer keys toward the per-project cap; platform and
-			// hidden LLM SDK aggregate keys are excluded.
+			projectId: { in: orgProjectIds },
+			status: { eq: "active" },
 			keyType: { eq: "user" },
+		},
+		columns: { id: true },
+	});
+
+	const maxApiKeys = resolveApiKeyLimit(
+		project.organization.plan,
+		project.organization.apiKeyLimit,
+	);
+
+	if (orgActiveApiKeys.length >= maxApiKeys) {
+		throw new HTTPException(400, {
+			message: `API key limit reached. Maximum ${maxApiKeys} active API keys per organization. Contact us at contact@llmgateway.io to unlock more.`,
+		});
+	}
+
+	// Enforce the per-member active-key cap. The creator's own per-member cap
+	// wins; for developers with no explicit cap the org-wide default developer
+	// cap applies.
+	const creatorMembership = await db.query.userOrganization.findFirst({
+		where: {
+			userId: { eq: userId },
+			organizationId: { eq: project.organization.id },
+		},
+		columns: {
+			role: true,
+			maxApiKeys: true,
+			usageLimit: true,
+			periodUsageLimit: true,
+			periodUsageDurationValue: true,
+			periodUsageDurationUnit: true,
 		},
 	});
 
-	const maxApiKeys = project.organization.plan === "enterprise" ? 500 : 20;
+	// A key's limits must stay at or below the creator's effective member budget.
+	// Skipped for programmatic (master-key) creation, which has no interactive
+	// member context; the gateway still enforces the member budget at request time.
+	if (!options.skipAccessCheck) {
+		assertApiKeyLimitsWithinMemberBudget(
+			creatorMembership,
+			project.organization,
+			{
+				usageLimit: usageLimit ?? null,
+				periodUsageLimit: periodUsageLimit ?? null,
+				periodUsageDurationValue: periodUsageDurationValue ?? null,
+				periodUsageDurationUnit: periodUsageDurationUnit ?? null,
+			},
+		);
+	}
 
-	if (existingApiKeys.length >= maxApiKeys) {
-		throw new HTTPException(400, {
-			message: `API key limit reached. Maximum ${maxApiKeys} API keys per project. Contact us at contact@llmgateway.io to unlock more.`,
+	const effectiveMaxApiKeys =
+		creatorMembership?.maxApiKeys ??
+		(creatorMembership?.role === "developer"
+			? project.organization.defaultDeveloperMaxApiKeys
+			: null);
+
+	if (typeof effectiveMaxApiKeys === "number") {
+		const memberActiveKeys = await db.query.apiKey.findMany({
+			where: {
+				createdBy: { eq: userId },
+				status: { eq: "active" },
+				keyType: { eq: "user" },
+				projectId: { in: orgProjectIds },
+			},
+			columns: { id: true },
 		});
+
+		if (memberActiveKeys.length >= effectiveMaxApiKeys) {
+			throw new HTTPException(400, {
+				message: `You have reached your limit of ${effectiveMaxApiKeys} active API keys set by an organization admin.`,
+			});
+		}
 	}
 
 	const prefix =
@@ -1046,6 +1204,8 @@ keysApi.openapi(list, async (c) => {
 
 	// Determine user's role for the relevant organization
 	let userRole: "owner" | "admin" | "developer" = "developer";
+	// Project-scoped "developer" members may only ever see their OWN keys.
+	let developerScoped = false;
 	if (projectId) {
 		const project = await db.query.project.findFirst({
 			where: {
@@ -1061,12 +1221,14 @@ keysApi.openapi(list, async (c) => {
 			);
 			if (userOrg) {
 				userRole = userOrg.role as "owner" | "admin" | "developer";
+				developerScoped = userRole === "developer";
 			}
 		}
 	}
 
-	// All users can see all keys, but can still filter to "mine"
-	const shouldFilterByCreator = filter === "mine";
+	// Owners/admins see all keys (with an optional "mine" filter); developers are
+	// always restricted to the keys they created.
+	const shouldFilterByCreator = filter === "mine" || developerScoped;
 
 	// Get API keys for the specified project or all accessible projects
 	const apiKeys = await db.query.apiKey.findMany({
@@ -1095,7 +1257,9 @@ keysApi.openapi(list, async (c) => {
 		},
 	});
 
-	// Get organization plan info if projectId is specified
+	// Get organization plan info if projectId is specified. The cap is org-wide,
+	// so currentCount counts active developer keys across ALL of the org's
+	// projects, not just the selected one.
 	let currentCount = 0;
 	let maxKeys = 0;
 	let plan: "free" | "pro" | "enterprise" = "free";
@@ -1114,8 +1278,21 @@ keysApi.openapi(list, async (c) => {
 
 		if (project?.organization) {
 			plan = project.organization.plan as "free" | "pro" | "enterprise";
-			maxKeys = plan === "enterprise" ? 500 : plan === "pro" ? 20 : 5;
-			currentCount = apiKeys.filter((key) => key.status !== "deleted").length;
+			maxKeys = resolveApiKeyLimit(plan, project.organization.apiKeyLimit);
+
+			const orgProjects = await db.query.project.findMany({
+				where: { organizationId: { eq: project.organization.id } },
+				columns: { id: true },
+			});
+			const orgActiveKeys = await db.query.apiKey.findMany({
+				where: {
+					projectId: { in: orgProjects.map((p) => p.id) },
+					status: { eq: "active" },
+					keyType: { eq: "user" },
+				},
+				columns: { id: true },
+			});
+			currentCount = orgActiveKeys.length;
 		}
 	}
 
@@ -1260,7 +1437,10 @@ keysApi.openapi(deleteKey, async (c) => {
 		});
 	}
 
-	await db
+	// Delete through the cached client so onMutate busts the gateway's cached
+	// token lookups; otherwise the deleted key keeps authenticating until the
+	// cache expires.
+	await cdb
 		.update(tables.apiKey)
 		.set({
 			status: "deleted",
@@ -1348,7 +1528,11 @@ keysApi.openapi(updateStatus, async (c) => {
 	}
 
 	const { id } = c.req.param();
-	const { status, expiresAt: expiresAtInput } = c.req.valid("json");
+	const {
+		status,
+		expiresAt: expiresAtInput,
+		description: descriptionInput,
+	} = c.req.valid("json");
 
 	// Get the user's projects
 	const userOrgs = await db.query.userOrganization.findMany({
@@ -1400,11 +1584,37 @@ keysApi.openapi(updateStatus, async (c) => {
 		});
 	}
 
+	if (
+		status === undefined &&
+		expiresAtInput === undefined &&
+		descriptionInput === undefined
+	) {
+		throw new HTTPException(400, {
+			message: "No changes provided",
+		});
+	}
+
 	// Prevent deactivation of the auto-generated playground key
 	if (isPlaygroundApiKey(apiKey) && status === "inactive") {
 		throw new HTTPException(403, {
 			message:
 				"Cannot deactivate the playground API key. This key is required for the playground to function.",
+		});
+	}
+
+	// Renaming the auto-generated playground key would break the UI's lookup
+	// of it by its fixed description.
+	if (isPlaygroundApiKey(apiKey) && descriptionInput !== undefined) {
+		throw new HTTPException(403, {
+			message: "Cannot rename the playground API key.",
+		});
+	}
+
+	// A regular key must not take on the reserved playground description,
+	// or it would collide with the playground key's fixed-description lookup.
+	if (descriptionInput === PLAYGROUND_API_KEY_DESCRIPTION) {
+		throw new HTTPException(403, {
+			message: "This name is reserved for the playground API key.",
 		});
 	}
 
@@ -1444,22 +1654,31 @@ keysApi.openapi(updateStatus, async (c) => {
 	}
 
 	// Update the API key status
-	const [updatedApiKey] = await db
+	// Update through the cached client so its onMutate invalidates the gateway's
+	// cached token lookups (Drizzle cache + SWR mirror) for the api_key table.
+	// Otherwise a deactivated key keeps authenticating (and a reactivated one
+	// stays rejected) until the cache expires, so the change is not instant.
+	const [updatedApiKey] = await cdb
 		.update(tables.apiKey)
 		.set({
-			status,
+			...(status !== undefined ? { status } : {}),
 			...(expiresAtProvided ? { expiresAt: nextExpiresAt } : {}),
+			...(descriptionInput !== undefined
+				? { description: descriptionInput }
+				: {}),
 		})
 		.where(eq(tables.apiKey.id, id))
 		.returning();
 
-	const statusChanged = apiKey.status !== status;
+	const statusChanged = status !== undefined && apiKey.status !== status;
 	const expiryChanged =
 		expiresAtProvided &&
 		(apiKey.expiresAt?.getTime() ?? null) !==
 			(nextExpiresAt?.getTime() ?? null);
+	const descriptionChanged =
+		descriptionInput !== undefined && apiKey.description !== descriptionInput;
 
-	if (statusChanged || expiryChanged) {
+	if (statusChanged || expiryChanged || descriptionChanged) {
 		const changes: Record<string, { old: unknown; new: unknown }> = {};
 		if (statusChanged) {
 			changes.status = { old: apiKey.status, new: status };
@@ -1468,6 +1687,12 @@ keysApi.openapi(updateStatus, async (c) => {
 			changes.expiresAt = {
 				old: apiKey.expiresAt?.toISOString() ?? null,
 				new: nextExpiresAt?.toISOString() ?? null,
+			};
+		}
+		if (descriptionChanged) {
+			changes.description = {
+				old: apiKey.description,
+				new: descriptionInput,
 			};
 		}
 
@@ -1485,7 +1710,10 @@ keysApi.openapi(updateStatus, async (c) => {
 	}
 
 	return c.json({
-		message: `API key status updated to ${status}`,
+		message:
+			status !== undefined
+				? `API key status updated to ${status}`
+				: "API key updated",
 		apiKey: {
 			...serializeApiKey(updatedApiKey),
 			maskedToken: maskToken(updatedApiKey.token),
@@ -1790,10 +2018,45 @@ keysApi.openapi(updateUsageLimit, async (c) => {
 	const nextLimitConfig = mergeApiKeyLimitConfig(apiKey, limitUpdate);
 	parseApiKeyPeriodConfig(nextLimitConfig);
 
+	// The key's limits must stay at or below the key owner's effective member
+	// budget (their own caps, or the org-wide default developer caps).
+	const ownerMembership = await db.query.userOrganization.findFirst({
+		where: {
+			userId: { eq: apiKey.createdBy },
+			organizationId: { eq: projectOrgId },
+		},
+		columns: {
+			role: true,
+			maxApiKeys: true,
+			usageLimit: true,
+			periodUsageLimit: true,
+			periodUsageDurationValue: true,
+			periodUsageDurationUnit: true,
+		},
+	});
+	const ownerOrg = await db.query.organization.findFirst({
+		where: { id: { eq: projectOrgId } },
+		columns: {
+			defaultDeveloperMaxApiKeys: true,
+			defaultDeveloperUsageLimit: true,
+			defaultDeveloperPeriodUsageLimit: true,
+			defaultDeveloperPeriodUsageDurationValue: true,
+			defaultDeveloperPeriodUsageDurationUnit: true,
+		},
+	});
+	if (ownerOrg) {
+		assertApiKeyLimitsWithinMemberBudget(
+			ownerMembership,
+			ownerOrg,
+			nextLimitConfig,
+		);
+	}
+
 	const periodConfigChanged = hasPeriodConfigChanged(apiKey, nextLimitConfig);
 
-	// Update the API key usage limit
-	const [updatedApiKey] = await db
+	// Update the API key usage limit through the cached client so onMutate busts
+	// the gateway's cached token lookup and the new limits take effect instantly.
+	const [updatedApiKey] = await cdb
 		.update(tables.apiKey)
 		.set({
 			usageLimit: nextLimitConfig.usageLimit,

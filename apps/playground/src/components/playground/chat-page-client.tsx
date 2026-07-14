@@ -16,6 +16,7 @@ import {
 	type ChatSidebarHandle,
 } from "@/components/playground/chat-sidebar";
 import { ChatUI } from "@/components/playground/chat-ui";
+import { ProjectContextBanner } from "@/components/playground/project-context-banner";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -50,6 +51,10 @@ import {
 	getModelPreferenceCookie,
 	setModelPreferenceCookie,
 } from "@/lib/model-preferences";
+import {
+	getFallbackReasoningEffortOptions,
+	getReasoningEffortOptions,
+} from "@/lib/model-utils";
 import { shouldDisableFallback } from "@/lib/no-fallback";
 import { getErrorMessage } from "@/lib/utils";
 
@@ -57,6 +62,7 @@ import type {
 	ApiModel,
 	ApiModelProviderMapping,
 	ApiProvider,
+	ReasoningEffortOption,
 } from "@/lib/fetch-models";
 import type { ComboboxModel, Organization, Project } from "@/lib/types";
 import type { UIMessage } from "ai";
@@ -332,7 +338,7 @@ export default function ChatPageClient({
 
 	const [selectedModel, setSelectedModel] = useState(() => getInitialModel());
 	const [reasoningEffort, setReasoningEffort] = useState<
-		"" | "minimal" | "low" | "medium" | "high"
+		"" | ReasoningEffortOption
 	>("");
 	const [imageAspectRatio, setImageAspectRatio] = useState<
 		| "auto"
@@ -404,6 +410,13 @@ export default function ChatPageClient({
 
 	// Get chat ID from URL search params
 	const chatIdFromUrl = searchParams.get("id");
+	// Chat project (knowledge base) context: seeded from the ?project= param
+	// when starting a chat from a project page, then kept in sync with the
+	// loaded chat's own projectId.
+	const projectIdFromUrl = searchParams.get("project");
+	const [activeProjectId, setActiveProjectId] = useState<string | null>(
+		projectIdFromUrl,
+	);
 	const [currentChatId, setCurrentChatId] = useState<string | null>(
 		chatIdFromUrl,
 	);
@@ -706,6 +719,25 @@ export default function ChatPageClient({
 		return !!mapping?.reasoning;
 	}, [models, selectedModel]);
 
+	const reasoningEfforts = useMemo(() => {
+		if (!selectedModel) {
+			return null;
+		}
+		const { providerId, modelId, region } =
+			parseModelSelectorValue(selectedModel);
+		const def = models.find((m) => m.id === modelId);
+		if (!def) {
+			return null;
+		}
+		if (!providerId) {
+			return getReasoningEffortOptions(
+				def.mappings.filter((p: ApiModelProviderMapping) => p.reasoning),
+			);
+		}
+		const mapping = getSelectedMapping(def, providerId, region);
+		return getReasoningEffortOptions(mapping ? [mapping] : []);
+	}, [models, selectedModel]);
+
 	const supportsWebSearch = useMemo(() => {
 		if (!selectedModel) {
 			return false;
@@ -792,6 +824,9 @@ export default function ChatPageClient({
 						? { mcp_servers: enabledMcpServers }
 						: {}),
 					...(isTemporaryChat ? { temporary_chat: true } : {}),
+					...(activeProjectId && !isTemporaryChat
+						? { project_id: activeProjectId }
+						: {}),
 					...(activeSkills.length > 0
 						? {
 								skill_instructions: activeSkills
@@ -817,6 +852,7 @@ export default function ChatPageClient({
 			supportsWebSearch,
 			getEnabledMcpServers,
 			isTemporaryChat,
+			activeProjectId,
 			activeSkills,
 		],
 	);
@@ -901,6 +937,23 @@ export default function ChatPageClient({
 	const { data: currentChatData, isLoading: isChatLoading } = useDataChat(
 		currentChatId ?? "",
 	);
+
+	// Keep the project context in sync: an existing chat's own projectId wins;
+	// without a chat, fall back to the ?project= param (new chat from a project).
+	useEffect(() => {
+		if (currentChatId) {
+			if (currentChatData?.chat?.id === currentChatId) {
+				setActiveProjectId(currentChatData.chat.projectId ?? null);
+			} else if (!pendingNewChatRef.current) {
+				// Navigating to a different chat whose data hasn't loaded yet —
+				// don't keep showing the previous chat's project context. A chat
+				// just created here (pendingNewChatRef) keeps the ?project= value.
+				setActiveProjectId(null);
+			}
+		} else {
+			setActiveProjectId(projectIdFromUrl);
+		}
+	}, [currentChatId, currentChatData?.chat, projectIdFromUrl]);
 
 	useEffect(() => {
 		// Use `status` from useChat (reactive) instead of the isSendingRef ref so
@@ -1147,6 +1200,7 @@ export default function ChatPageClient({
 					webSearch: webSearchEnabled,
 					comparisonEnabled,
 					organizationId: selectedOrganization?.id ?? chatOrg?.id,
+					...(activeProjectId ? { projectId: activeProjectId } : {}),
 				},
 			});
 			const newChatId = chatData.chat.id;
@@ -1838,12 +1892,19 @@ export default function ChatPageClient({
 		setText(value);
 	};
 
-	// Reset reasoning effort when switching to a non-reasoning model
+	// Reset reasoning effort when switching to a model that doesn't support
+	// it. The effective options mirror what the selector renders: the model's
+	// declared efforts, or the generic fallback set when undeclared.
 	useEffect(() => {
-		if (!supportsReasoning && reasoningEffort) {
+		if (!reasoningEffort) {
+			return;
+		}
+		const effortOptions =
+			reasoningEfforts ?? getFallbackReasoningEffortOptions(selectedModel);
+		if (!supportsReasoning || !effortOptions.includes(reasoningEffort)) {
 			setReasoningEffort("");
 		}
-	}, [supportsReasoning, reasoningEffort]);
+	}, [supportsReasoning, reasoningEffort, reasoningEfforts, selectedModel]);
 
 	// Reset image size/quality only when the selected model changes and the
 	// current value is not valid for the new model. Including alibabaImageSize
@@ -1907,9 +1968,9 @@ export default function ChatPageClient({
 
 	return (
 		<SidebarProvider>
-			<h1 className="sr-only">
-				LLM Gateway Playground - Chat with 280+ AI Models
-			</h1>
+			<h2 className="sr-only">
+				LLM Gateway Playground - Chat with 200+ AI Models
+			</h2>
 			<div className="flex h-svh bg-background w-full overflow-hidden">
 				{isTemporaryChat ? null : (
 					<ChatSidebar
@@ -1974,6 +2035,9 @@ export default function ChatPageClient({
 							previewPrompt={getFirstUserMessageText(messages)}
 						/>
 					</header>
+					{activeProjectId && !isTemporaryChat ? (
+						<ProjectContextBanner projectId={activeProjectId} />
+					) : null}
 					{comparisonEnabled && !isTemporaryChat ? (
 						<div className="hidden md:flex shrink-0 border-b bg-muted/40 px-4 py-2 items-center justify-between gap-3">
 							<div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -2086,6 +2150,7 @@ export default function ChatPageClient({
 											reasoningEffort={reasoningEffort}
 											setReasoningEffort={setReasoningEffort}
 											supportsReasoning={supportsReasoning}
+											reasoningEfforts={reasoningEfforts}
 											imageAspectRatio={imageAspectRatio}
 											setImageAspectRatio={setImageAspectRatio}
 											imageSize={imageSize}
@@ -2146,6 +2211,7 @@ export default function ChatPageClient({
 										reasoningEffort={reasoningEffort}
 										setReasoningEffort={setReasoningEffort}
 										supportsReasoning={supportsReasoning}
+										reasoningEfforts={reasoningEfforts}
 										imageAspectRatio={imageAspectRatio}
 										setImageAspectRatio={setImageAspectRatio}
 										imageSize={imageSize}
@@ -2395,7 +2461,7 @@ function ExtraChatPanel({
 	const comparisonChatIdRef = useRef<string | null>(initialChatId);
 	const loadedComparisonChatIdRef = useRef<string | null>(null);
 	const [reasoningEffort, setReasoningEffort] = useState<
-		"" | "minimal" | "low" | "medium" | "high"
+		"" | ReasoningEffortOption
 	>("");
 	const [imageAspectRatio, setImageAspectRatio] = useState<
 		| "auto"
@@ -2607,6 +2673,39 @@ function ExtraChatPanel({
 		const mapping = getSelectedMapping(def, providerId, region);
 		return !!mapping?.reasoning;
 	}, [models, selectedModel]);
+
+	const reasoningEfforts = useMemo(() => {
+		if (!selectedModel) {
+			return null;
+		}
+		const { providerId, modelId, region } =
+			parseModelSelectorValue(selectedModel);
+		const def = models.find((m) => m.id === modelId);
+		if (!def) {
+			return null;
+		}
+		if (!providerId) {
+			return getReasoningEffortOptions(
+				def.mappings.filter((p: ApiModelProviderMapping) => p.reasoning),
+			);
+		}
+		const mapping = getSelectedMapping(def, providerId, region);
+		return getReasoningEffortOptions(mapping ? [mapping] : []);
+	}, [models, selectedModel]);
+
+	// Reset reasoning effort when switching to a model that doesn't support
+	// it. The effective options mirror what the selector renders: the model's
+	// declared efforts, or the generic fallback set when undeclared.
+	useEffect(() => {
+		if (!reasoningEffort) {
+			return;
+		}
+		const effortOptions =
+			reasoningEfforts ?? getFallbackReasoningEffortOptions(selectedModel);
+		if (!supportsReasoning || !effortOptions.includes(reasoningEffort)) {
+			setReasoningEffort("");
+		}
+	}, [supportsReasoning, reasoningEffort, reasoningEfforts, selectedModel]);
 
 	const supportsWebSearch = useMemo(() => {
 		if (!selectedModel) {
@@ -2978,6 +3077,7 @@ function ExtraChatPanel({
 					reasoningEffort={reasoningEffort}
 					setReasoningEffort={setReasoningEffort}
 					supportsReasoning={supportsReasoning}
+					reasoningEfforts={reasoningEfforts}
 					imageAspectRatio={imageAspectRatio}
 					setImageAspectRatio={setImageAspectRatio}
 					imageSize={imageSize}

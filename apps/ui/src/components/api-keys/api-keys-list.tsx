@@ -4,6 +4,7 @@ import {
 	EditIcon,
 	KeyIcon,
 	MoreHorizontal,
+	PencilIcon,
 	PlusIcon,
 	RefreshCwIcon,
 	Shield,
@@ -12,6 +13,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
+import { useDashboardNavigation } from "@/hooks/useDashboardNavigation";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -62,6 +64,7 @@ import { ApiKeyLimitsDialog } from "./api-key-limits-dialog";
 import { formatApiKeyExpiry } from "./api-key-ttl-fields";
 import { CreateApiKeyDialog } from "./create-api-key-dialog";
 import { ReactivateApiKeyDialog } from "./reactivate-api-key-dialog";
+import { RenameApiKeyDialog } from "./rename-api-key-dialog";
 import { RollApiKeyDialog } from "./roll-api-key-dialog";
 
 import type { ApiKey, Project } from "@/lib/types";
@@ -82,6 +85,9 @@ export function ApiKeysList({
 	const queryClient = useQueryClient();
 	const api = useApi();
 	const pathname = usePathname();
+	const { selectedOrganization } = useDashboardNavigation();
+	// Developers only ever see their own keys, so the All/Mine selector is hidden.
+	const isDeveloper = selectedOrganization?.role === "developer";
 	const { orgId, projectId } = useMemo(
 		() => extractOrgAndProjectFromPath(pathname),
 		[pathname],
@@ -90,6 +96,7 @@ export function ApiKeysList({
 	const [creatorFilter, setCreatorFilter] = useState<CreatorFilter>("all");
 	const [reactivateKey, setReactivateKey] = useState<ApiKey | null>(null);
 	const [rollKey, setRollKey] = useState<ApiKey | null>(null);
+	const [renameKey, setRenameKey] = useState<ApiKey | null>(null);
 
 	const getIamRulesUrl = (keyId: string) =>
 		`/dashboard/${orgId}/${projectId}/api-keys/${keyId}/iam` as Route;
@@ -145,6 +152,9 @@ export function ApiKeysList({
 
 	const { mutateAsync: rollKeyAsync, isPending: isRollPending } =
 		api.useMutation("post", "/keys/api/{id}/roll");
+
+	const { mutateAsync: renameKeyAsync, isPending: isRenamePending } =
+		api.useMutation("patch", "/keys/api/{id}");
 
 	const allKeys = data?.apiKeys.filter((key) => key.status !== "deleted") ?? [];
 	const activeKeys = allKeys.filter((key) => key.status === "active");
@@ -350,6 +360,36 @@ export function ApiKeysList({
 		}
 	};
 
+	const handleRename = async (description: string) => {
+		if (!renameKey) {
+			return;
+		}
+
+		try {
+			await renameKeyAsync({
+				params: {
+					path: { id: renameKey.id },
+				},
+				body: {
+					description,
+				},
+			});
+
+			invalidateApiKeys();
+			setRenameKey(null);
+
+			toast({
+				title: "API Key Renamed",
+				description: "The API key has been renamed.",
+			});
+		} catch {
+			toast({
+				title: "Failed to rename API key.",
+				variant: "destructive",
+			});
+		}
+	};
+
 	const updateKeyUsageLimit = async (
 		id: string,
 		payload: ApiKeyLimitPayload,
@@ -458,7 +498,7 @@ export function ApiKeysList({
 					}
 					disabledMessage={
 						planLimits
-							? `${planLimits.plan === "enterprise" ? "Enterprise" : planLimits.plan === "pro" ? "Pro" : "Free"} plan allows maximum ${planLimits.maxKeys} API keys per project`
+							? `${planLimits.plan === "enterprise" ? "Enterprise" : planLimits.plan === "pro" ? "Pro" : "Free"} plan allows maximum ${planLimits.maxKeys} API keys per organization`
 							: undefined
 					}
 				>
@@ -481,16 +521,18 @@ export function ApiKeysList({
 		<>
 			{/* Filter Tabs */}
 			<div className="mb-6 flex flex-col gap-4">
-				{/* Creator Filter */}
-				<Tabs
-					value={creatorFilter}
-					onValueChange={(value) => setCreatorFilter(value as CreatorFilter)}
-				>
-					<TabsList className="flex space-x-2 w-full md:w-fit">
-						<TabsTrigger value="all">All Keys</TabsTrigger>
-						<TabsTrigger value="mine">My Keys</TabsTrigger>
-					</TabsList>
-				</Tabs>
+				{/* Creator Filter — hidden for developers (own keys only) */}
+				{!isDeveloper && (
+					<Tabs
+						value={creatorFilter}
+						onValueChange={(value) => setCreatorFilter(value as CreatorFilter)}
+					>
+						<TabsList className="flex space-x-2 w-full md:w-fit">
+							<TabsTrigger value="all">All Keys</TabsTrigger>
+							<TabsTrigger value="mine">My Keys</TabsTrigger>
+						</TabsList>
+					</Tabs>
+				)}
 
 				{/* Status Filter Tabs */}
 				<Tabs
@@ -635,6 +677,7 @@ export function ApiKeysList({
 								<TableCell>
 									<ApiKeyLimitsDialog
 										apiKey={key}
+										organizationId={orgId ?? ""}
 										onSubmit={(payload) => updateKeyUsageLimit(key.id, payload)}
 									>
 										<Button
@@ -704,6 +747,10 @@ export function ApiKeysList({
 											{key.description !== "Auto-generated playground key" && (
 												<>
 													<DropdownMenuSeparator />
+													<DropdownMenuItem onClick={() => setRenameKey(key)}>
+														<PencilIcon className="mr-2 h-4 w-4" />
+														Rename Key
+													</DropdownMenuItem>
 													<DropdownMenuItem onClick={() => toggleStatus(key)}>
 														{key.status === "active"
 															? "Deactivate"
@@ -869,6 +916,7 @@ export function ApiKeysList({
 							<div>
 								<ApiKeyLimitsDialog
 									apiKey={key}
+									organizationId={orgId ?? ""}
 									onSubmit={(payload) => updateKeyUsageLimit(key.id, payload)}
 								>
 									<Button
@@ -959,6 +1007,18 @@ export function ApiKeysList({
 				}}
 				onConfirm={handleRoll}
 				isPending={isRollPending}
+			/>
+
+			<RenameApiKeyDialog
+				apiKey={renameKey}
+				open={renameKey !== null}
+				onOpenChange={(open) => {
+					if (!open) {
+						setRenameKey(null);
+					}
+				}}
+				onConfirm={handleRename}
+				isPending={isRenamePending}
 			/>
 		</>
 	);

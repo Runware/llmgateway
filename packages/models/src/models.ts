@@ -35,6 +35,20 @@ export type Model = (typeof models)[number]["id"];
 export type Price = string;
 
 /**
+ * Reasoning effort tiers accepted by the unified reasoning_effort parameter,
+ * in ascending order of effort. Which subset a given provider mapping
+ * actually supports is declared per mapping via `reasoningEfforts`.
+ */
+export type ReasoningEffort =
+	| "none"
+	| "minimal"
+	| "low"
+	| "medium"
+	| "high"
+	| "xhigh"
+	| "max";
+
+/**
  * Pricing tier for models with context-length based pricing
  */
 export interface PricingTier {
@@ -291,6 +305,12 @@ export interface ProviderModelMapping {
 	 */
 	maxOutput?: number;
 	/**
+	 * Weight quantization the provider serves this model at (e.g. "fp8").
+	 * Only set when the provider explicitly documents the serving precision;
+	 * when absent, the quantization is unknown or undisclosed.
+	 */
+	quantization?: Quantization;
+	/**
 	 * Whether this specific model supports streaming for this provider.
 	 * - true: supports both streaming and non-streaming
 	 * - false: does not support streaming
@@ -323,6 +343,11 @@ export interface ProviderModelMapping {
 	 * Whether this model supports reasoning mode
 	 */
 	reasoning?: boolean;
+	/**
+	 * Whether this model supports the OpenAI `verbosity` parameter
+	 * (low/medium/high response detail control, GPT-5 and later)
+	 */
+	verbosity?: boolean;
 	/**
 	 * Whether the provider returns reasoning inside tagged content (e.g. &lt;think&gt;...&lt;/think&gt;)
 	 * that needs to be split into separate reasoning and content fields
@@ -403,6 +428,17 @@ export interface ProviderModelMapping {
 	 * - "adaptive": new `thinking: { type: "adaptive" }` + `output_config.effort` format (Opus 4.7+)
 	 */
 	reasoningMode?: "enabled" | "adaptive";
+	/**
+	 * Exact `reasoning_effort` values this provider mapping supports, in
+	 * ascending order of effort. Effort tiers differ per model generation
+	 * (e.g. GPT-5 accepts `minimal`..`high`, GPT-5.6 accepts `none`..`max`,
+	 * Anthropic thinking models accept `low`..`max`), so each mapping declares
+	 * its own list. The gateway forwards effort values to the provider as-is
+	 * (unsupported values fail upstream); this metadata is exposed via the
+	 * models APIs so clients can present valid options. When unset, the
+	 * supported values are not (yet) declared for this mapping.
+	 */
+	reasoningEfforts?: ReasoningEffort[];
 	/**
 	 * Whether this specific model supports tool calling for this provider
 	 */
@@ -535,6 +571,16 @@ export interface ProviderModelMapping {
 }
 
 export type StabilityLevel = "stable" | "beta" | "unstable" | "experimental";
+
+export type Quantization =
+	| "int4"
+	| "int8"
+	| "fp4"
+	| "fp6"
+	| "fp8"
+	| "fp16"
+	| "bf16"
+	| "fp32";
 
 export interface ModelDefinition {
 	/**

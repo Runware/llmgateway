@@ -18,14 +18,14 @@ import { db } from "@llmgateway/db";
 import {
 	createHonoRequestLogger,
 	createRequestLifecycleMiddleware,
-	getMetrics,
-	getMetricsContentType,
 } from "@llmgateway/instrumentation";
 import { logger, toError } from "@llmgateway/logger";
 import { HealthChecker } from "@llmgateway/shared";
 
 import { anthropic } from "./anthropic/anthropic.js";
 import { chat } from "./chat/chat.js";
+import { extractErrorCause } from "./chat/tools/extract-error-cause.js";
+import { isUpstreamTermination } from "./chat/tools/normalize-streaming-error.js";
 import { embeddingsRoute } from "./embeddings/route.js";
 import { imagesRoute } from "./images/route.js";
 import {
@@ -217,6 +217,20 @@ app.onError((error, c) => {
 		return renderGatewayError(c, 499, "Client Closed Request");
 	}
 
+	// An upstream-side socket close (e.g. undici "terminated: other side
+	// closed" / ECONNRESET) that escaped the chat handler's own classification
+	// is an expected provider/client disconnect, not a gateway bug. Log it at
+	// warn to avoid raising server-error alerts.
+	if (isUpstreamTermination(error)) {
+		logger.warn("Upstream connection terminated", {
+			message: error instanceof Error ? error.message : String(error),
+			cause: extractErrorCause(error),
+			path: c.req.path,
+			method: c.req.method,
+		});
+		return renderGatewayError(c, 502, "Upstream connection terminated");
+	}
+
 	// For any other errors (non-HTTPException), return 500 Internal Server Error
 	logger.error("Unhandled error", toError(error));
 	return renderGatewayError(c, 500, "Internal Server Error");
@@ -322,32 +336,6 @@ app.openapi(root, async (c) => {
 	return c.json(response, statusCode as 200 | 503);
 });
 
-// Prometheus metrics endpoint
-const metricsRoute = createRoute({
-	summary: "Prometheus metrics",
-	description: "Prometheus metrics endpoint for scraping.",
-	operationId: "metrics",
-	method: "get",
-	path: "/metrics",
-	responses: {
-		200: {
-			content: {
-				"text/plain": {
-					schema: z.string(),
-				},
-			},
-			description: "Prometheus metrics in exposition format.",
-		},
-	},
-});
-
-app.openapi(metricsRoute, async (c) => {
-	const metrics = await getMetrics();
-	return c.text(metrics, 200, {
-		"Content-Type": getMetricsContentType(),
-	});
-});
-
 const v1 = new OpenAPIHono<ServerTypes>();
 
 v1.route("/chat", chat);
@@ -373,3 +361,9 @@ registerMcpOAuthRoutes(app);
 app.doc("/json", config);
 
 app.get("/docs", swaggerUI({ url: "/json" }));
+
+// The gateway is an API, not a website: keep search engines from crawling and
+// indexing its endpoints (GSC keeps reporting api.llmgateway.io URLs).
+app.get("/robots.txt", (c) => {
+	return c.text("User-agent: *\nDisallow: /\n");
+});

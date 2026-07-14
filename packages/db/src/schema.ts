@@ -199,6 +199,15 @@ export const organization = pgTable(
 			.notNull()
 			.default("free"),
 		planExpiresAt: timestamp(),
+		// Manual seat-limit override set by admins. Null = use the plan default
+		// (free/pro = 5, enterprise = 100). When set, this takes precedence for
+		// both display and enforcement of the team-member cap.
+		seats: integer(),
+		// Manual API-key-limit override set by admins. Null = use the plan default
+		// (free = 5, pro = 20, enterprise = 500). When set, this takes precedence
+		// for both display and enforcement of the org-wide API-key cap (total
+		// active developer keys across all of the org's projects).
+		apiKeyLimit: integer(),
 		subscriptionCancelled: boolean().notNull().default(false),
 		trialStartDate: timestamp(),
 		trialEndDate: timestamp(),
@@ -212,6 +221,11 @@ export const organization = pgTable(
 		// only routes to providers meeting the required certifications/data
 		// policies. Null = no policy configured.
 		providerCompliancePolicy: json().$type<ProviderCompliancePolicy>(),
+		// Enterprise Google SSO auto-join. When set, users signing in via Google
+		// with a verified email at this domain are auto-added to the org as
+		// "developer". Stored lowercase, no leading "@". Unique so a domain can
+		// only be claimed by one organization.
+		ssoAutoJoinDomain: text(),
 		status: text({
 			enum: ["active", "inactive", "deleted"],
 		}).default("active"),
@@ -250,14 +264,23 @@ export const organization = pgTable(
 		devPlanCreditsFrozen: boolean().notNull().default(false),
 		devPlanCreditsLimitBeforeFreeze: decimal(),
 		devPlanBillingCycleStart: timestamp(),
-		// Stripe current_period_start of the cycle in which the last tier change
-		// was claimed. A tier change atomically advances this to the current cycle
-		// start only if it hasn't been claimed yet, enforcing one change per cycle
-		// without a read-then-write race.
-		devPlanLastTierChangeCycleStart: timestamp(),
+		// Lease held while a dev plan upgrade request is in flight, guarding
+		// against a double charge from racing requests (e.g. a double-clicked
+		// confirm). Claimed atomically before any Stripe call and cleared when the
+		// request completes (success or failure). A lease leaked by a request that
+		// died mid-flight expires after a staleness window, so it can never block
+		// upgrades until the next billing cycle.
+		devPlanTierChangeClaimedAt: timestamp(),
 		devPlanStripeSubscriptionId: text().unique(),
 		devPlanCancelled: boolean().notNull().default(false),
 		devPlanExpiresAt: timestamp(),
+		// A scheduled downgrade to a lower tier. Downgrades apply at the next
+		// renewal, so `devPlan` (and the current cycle's credits) stay on the
+		// higher tier until then; this holds the tier the subscription will move
+		// to at renewal. Null means no pending downgrade. The renewal webhook
+		// applies it and clears it. Upgrades take effect immediately and never set
+		// this.
+		devPlanPendingTier: text({ enum: ["lite", "pro", "max"] }),
 		devPlanCycle: text({ enum: ["monthly", "annual"] })
 			.notNull()
 			.default("monthly"),
@@ -297,6 +320,16 @@ export const organization = pgTable(
 		// accrued end-user margin. Null until they onboard.
 		stripeConnectAccountId: text().unique(),
 		stripeConnectOnboarded: boolean().notNull().default(false),
+		// Org-wide default budget applied to every "developer" member. A member's
+		// own per-member budget (on user_organization) overrides these field by
+		// field. null = no default. Same shape as the per-member budget.
+		defaultDeveloperMaxApiKeys: integer(),
+		defaultDeveloperUsageLimit: decimal(),
+		defaultDeveloperPeriodUsageLimit: decimal(),
+		defaultDeveloperPeriodUsageDurationValue: integer(),
+		defaultDeveloperPeriodUsageDurationUnit: text({
+			enum: ["hour", "day", "week", "month"],
+		}),
 	},
 	(table) => [
 		index("organization_dev_plan_card_fingerprint_idx").on(
@@ -308,6 +341,11 @@ export const organization = pgTable(
 		// active fingerprints.
 		uniqueIndex("organization_chat_plan_card_fingerprint_uidx").on(
 			table.chatPlanCardFingerprint,
+		),
+		// A given SSO auto-join domain can only be claimed by one organization.
+		// NULLs are distinct in Postgres, so this only constrains configured domains.
+		uniqueIndex("organization_sso_auto_join_domain_uidx").on(
+			table.ssoAutoJoinDomain,
 		),
 	],
 );
@@ -376,6 +414,9 @@ export const transaction = pgTable(
 				"end_user_margin_accrual",
 				"end_user_refund",
 				"end_user_margin_payout",
+				// Developer-funded bonus credited to an end-user wallet on top-up,
+				// debited from the developer org's credit balance.
+				"end_user_bonus",
 			],
 		}).notNull(),
 		amount: decimal(),
@@ -578,6 +619,54 @@ export const enterpriseContactSubmission = pgTable(
 	],
 );
 
+export const providerListingRequest = pgTable(
+	"provider_listing_request",
+	{
+		id: text().primaryKey().notNull().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		providerName: text().notNull(),
+		email: text().notNull(),
+		url: text().notNull(),
+		country: text().notNull(),
+		complianceSoc2Type2: boolean().notNull().default(false),
+		complianceIso27001: boolean().notNull().default(false),
+		complianceGdpr: boolean().notNull().default(false),
+		dataRetentionDays: integer(),
+		trainsOnData: boolean(),
+		paymentStatus: text({
+			enum: ["unpaid", "paid", "refunded"],
+		})
+			.notNull()
+			.default("unpaid"),
+		stripeCheckoutSessionId: text(),
+		paidAt: timestamp(),
+		honeypot: text(),
+		clientTimestampMs: text(),
+		ipAddress: text(),
+		userAgent: text(),
+		spamFilterStatus: text({
+			enum: ["pending", "rejected", "delivered", "delivery_failed"],
+		})
+			.notNull()
+			.default("pending"),
+		rejectionReason: text(),
+		archivedAt: timestamp(),
+	},
+	(table) => [
+		index("provider_listing_request_created_at_idx").on(table.createdAt),
+		index("provider_listing_request_email_idx").on(table.email),
+		index("provider_listing_request_status_idx").on(table.spamFilterStatus),
+		check(
+			"provider_listing_request_payment_status_check",
+			sql`${table.paymentStatus} IN ('unpaid', 'paid', 'refunded')`,
+		),
+	],
+);
+
 export const userOrganization = pgTable(
 	"user_organization",
 	{
@@ -598,10 +687,107 @@ export const userOrganization = pgTable(
 		})
 			.notNull()
 			.default("owner"),
+		// Per-member budgets (config only; spend is read from existing per-key
+		// sources — apiKey.usage and apiKeyHourlyStats.cost — so no counters here).
+		// null = unlimited.
+		maxApiKeys: integer(),
+		usageLimit: decimal(),
+		periodUsageLimit: decimal(),
+		periodUsageDurationValue: integer(),
+		periodUsageDurationUnit: text({
+			enum: ["hour", "day", "week", "month"],
+		}),
+		// External identifier from the IdP for SCIM-provisioned members (Entra
+		// `externalId` / Okta `id`). Lets SCIM reconcile users that match on
+		// externalId rather than userName. null for non-SCIM memberships.
+		scimExternalId: text(),
 	},
 	(table) => [
 		index("user_organization_user_id_idx").on(table.userId),
 		index("user_organization_organization_id_idx").on(table.organizationId),
+		index("user_organization_scim_external_id_idx").on(
+			table.organizationId,
+			table.scimExternalId,
+		),
+	],
+);
+
+// Email invitations to an organization for people who may not have an account
+// yet. When a user with a matching email later signs up (email/password,
+// social, SSO) or is provisioned via SCIM, pending invites are auto-accepted
+// and turned into userOrganization memberships (see apps/api
+// lib/team-invites.ts). Invites for existing users are never created — those
+// are added as members directly.
+export const organizationInvite = pgTable(
+	"organization_invite",
+	{
+		id: text().primaryKey().notNull().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		// Stored lowercased; matched case-insensitively against the signup email.
+		email: text().notNull(),
+		role: text({
+			enum: ["owner", "admin", "developer"],
+		})
+			.notNull()
+			.default("developer"),
+		// Project grants applied at acceptance for "developer" invites. Projects
+		// deleted before acceptance are skipped.
+		projectIds: jsonb().$type<string[]>(),
+		invitedBy: text().references(() => user.id, { onDelete: "set null" }),
+		status: text({
+			enum: ["pending", "accepted", "revoked"],
+		})
+			.notNull()
+			.default("pending"),
+		expiresAt: timestamp().notNull(),
+		acceptedAt: timestamp(),
+		acceptedByUserId: text().references(() => user.id, {
+			onDelete: "set null",
+		}),
+	},
+	(table) => [
+		index("organization_invite_email_idx").on(table.email, table.status),
+		index("organization_invite_organization_id_idx").on(
+			table.organizationId,
+			table.status,
+		),
+	],
+);
+
+// Project-level access grants for project-scoped members. Owners/admins have
+// implicit access to every project in their org (no rows here); "developer"
+// members are limited to the projects granted via this table. Keyed on the
+// membership so grants cascade-delete when a member is removed from the org.
+export const userProject = pgTable(
+	"user_project",
+	{
+		id: text().primaryKey().notNull().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		userOrganizationId: text()
+			.notNull()
+			.references(() => userOrganization.id, { onDelete: "cascade" }),
+		projectId: text()
+			.notNull()
+			.references(() => project.id, { onDelete: "cascade" }),
+	},
+	(table) => [
+		uniqueIndex("user_project_membership_project_unique").on(
+			table.userOrganizationId,
+			table.projectId,
+		),
+		index("user_project_user_organization_id_idx").on(table.userOrganizationId),
+		index("user_project_project_id_idx").on(table.projectId),
 	],
 );
 
@@ -649,6 +835,12 @@ export const project = pgTable(
 		// Baked into credited spend power at top-up time so the usage/debit path
 		// stays raw-cost. Overridable per-wallet via wallet.markupPercentOverride.
 		endUserMarkupPercent: decimal().notNull().default("0"),
+		// Bonus credit multiplier applied to end-user top-ups (e.g. "50" = +50%, so
+		// a $10 top-up credits $15). The extra credits are funded by debiting the
+		// developer org's `credits` balance at top-up time (capped at the available
+		// balance). Set to "0" to disable. Overridable per-wallet via
+		// wallet.bonusPercentOverride.
+		endUserTopUpBonusPercent: decimal().notNull().default("0"),
 		// Browser origins allowed to call the gateway with this project's
 		// ephemeral end-user session tokens (CORS allowlist).
 		allowedOrigins: json().$type<string[]>(),
@@ -738,6 +930,9 @@ export const wallet = pgTable(
 		currency: text().notNull().default("USD"),
 		// Optional per-wallet markup override; falls back to project.endUserMarkupPercent.
 		markupPercentOverride: decimal(),
+		// Optional per-wallet top-up bonus override; falls back to
+		// project.endUserTopUpBonusPercent.
+		bonusPercentOverride: decimal(),
 		// Optional safety ceiling on a single session's spend.
 		spendCapPerSession: decimal(),
 		status: text({
@@ -824,7 +1019,14 @@ export const walletLedger = pgTable(
 			.notNull()
 			.references(() => organization.id, { onDelete: "cascade" }),
 		type: text({
-			enum: ["topup", "usage_debit", "refund", "adjustment", "reversal"],
+			enum: [
+				"topup",
+				"bonus",
+				"usage_debit",
+				"refund",
+				"adjustment",
+				"reversal",
+			],
 		}).notNull(),
 		// Signed amount in wallet currency (post-markup): +topup, -usage_debit.
 		amount: decimal().notNull(),
@@ -1236,6 +1438,8 @@ export const log = pgTable(
 		reasoningTokens: decimal(),
 		cachedTokens: decimal(),
 		cacheWriteTokens: decimal(),
+		cacheWrite5mTokens: decimal(),
+		cacheWrite1hTokens: decimal(),
 		messages: json(),
 		temperature: real(),
 		maxTokens: integer(),
@@ -1605,6 +1809,191 @@ export const passkey = pgTable(
 	(table) => [index("passkey_user_id_idx").on(table.userId)],
 );
 
+// SSO provider connections managed by the Better Auth `sso` plugin. The plugin
+// reads/writes this table via the drizzle adapter (registered as model
+// `ssoProvider`). `organizationId` links a connection to one of our
+// organizations; the app enforces org-scoped access to it.
+export const ssoProvider = pgTable(
+	"sso_provider",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		issuer: text().notNull(),
+		domain: text().notNull(),
+		oidcConfig: text(),
+		samlConfig: text(),
+		userId: text().references(() => user.id, { onDelete: "set null" }),
+		providerId: text().notNull().unique(),
+		// IdP vendor; drives the SAML attribute mapping and the vendor-specific
+		// field-name hints shown next to the SP URLs in the dashboard.
+		providerType: text({ enum: ["okta", "entra", "generic"] })
+			.notNull()
+			.default("generic"),
+		organizationId: text().references(() => organization.id, {
+			onDelete: "cascade",
+		}),
+		// When true, users whose email domain matches this connection may only
+		// sign in via SSO; password/social/passkey sessions are rejected.
+		enforced: boolean().notNull().default(false),
+		// Better Auth's SSO domain-verification flag. The SAML callback only
+		// implicitly links an SSO login to an existing user (e.g. one
+		// pre-provisioned via SCIM) when the provider's domain is verified and
+		// the asserted email is on that domain; otherwise such logins fail with
+		// `account_not_linked`. We stamp it true at registration instead of
+		// running the plugin's DNS-TXT verification flow.
+		domainVerified: boolean().notNull().default(false),
+	},
+	(table) => [
+		index("sso_provider_organization_id_idx").on(table.organizationId),
+		index("sso_provider_domain_idx").on(table.domain),
+	],
+);
+
+// SCIM bearer tokens for directory provisioning. This is our own table (NOT a
+// Better Auth plugin table): the custom SCIM 2.0 router authenticates Okta by
+// hashing the incoming bearer and matching `tokenHash`, which resolves the
+// `organizationId` that scopes every provisioning operation.
+export const scimToken = pgTable(
+	"scim_token",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		tokenHash: text().notNull().unique(),
+		maskedToken: text().notNull(),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		// The linked SSO connection's `providerId`; SCIM-provisioned users get an
+		// `account` row for this provider so they can subsequently sign in via SSO.
+		ssoProviderId: text(),
+		createdBy: text().references(() => user.id, { onDelete: "set null" }),
+		lastUsedAt: timestamp(),
+		status: text({
+			enum: ["active", "deleted"],
+		})
+			.notNull()
+			.default("active"),
+	},
+	(table) => [
+		index("scim_token_organization_id_idx").on(table.organizationId),
+		index("scim_token_token_hash_idx").on(table.tokenHash),
+	],
+);
+
+// SCIM groups pushed by the IdP (Okta). Membership drives role assignment via
+// `ssoRoleMapping`. Scoped to one organization by the SCIM token used.
+export const scimGroup = pgTable(
+	"scim_group",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		externalId: text(),
+		displayName: text().notNull(),
+	},
+	(table) => [
+		index("scim_group_organization_id_idx").on(table.organizationId),
+		uniqueIndex("scim_group_org_display_name_unique").on(
+			table.organizationId,
+			table.displayName,
+		),
+	],
+);
+
+export const scimGroupMember = pgTable(
+	"scim_group_member",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		scimGroupId: text()
+			.notNull()
+			.references(() => scimGroup.id, { onDelete: "cascade" }),
+		userId: text()
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+	},
+	(table) => [
+		uniqueIndex("scim_group_member_group_user_unique").on(
+			table.scimGroupId,
+			table.userId,
+		),
+		index("scim_group_member_user_id_idx").on(table.userId),
+	],
+);
+
+// Admin-defined mapping from a SCIM/IdP group name to an organization role.
+// Users get the highest-precedence mapped role among their groups; owners are
+// never auto-demoted (see routes/scim.ts).
+export const ssoRoleMapping = pgTable(
+	"sso_role_mapping",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		groupName: text().notNull(),
+		role: text({
+			enum: ["owner", "admin", "developer"],
+		}).notNull(),
+	},
+	(table) => [
+		uniqueIndex("sso_role_mapping_org_group_unique").on(
+			table.organizationId,
+			table.groupName,
+		),
+	],
+);
+
+// Default project grants for `developer` members provisioned via SSO/SCIM.
+// Owners/admins already have implicit access to every project, so this only
+// affects developer provisioning: when a new SSO/SCIM member is created they
+// receive a `userProject` grant for each project listed here. When an org has
+// no rows, provisioning falls back to the org's first (default) project so SSO
+// members can see something out of the box.
+export const ssoDefaultProject = pgTable(
+	"sso_default_project",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		organizationId: text()
+			.notNull()
+			.references(() => organization.id, { onDelete: "cascade" }),
+		projectId: text()
+			.notNull()
+			.references(() => project.id, { onDelete: "cascade" }),
+	},
+	(table) => [
+		uniqueIndex("sso_default_project_org_project_unique").on(
+			table.organizationId,
+			table.projectId,
+		),
+		index("sso_default_project_organization_id_idx").on(table.organizationId),
+	],
+);
+
 export const paymentMethod = pgTable(
 	"payment_method",
 	{
@@ -1656,6 +2045,112 @@ export const lock = pgTable("lock", {
 	key: text().notNull().unique(),
 });
 
+export const chatProject = pgTable(
+	"chat_project",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		name: text().notNull(),
+		description: text().notNull().default(""),
+		// Custom instructions prepended to the system prompt of chats in this
+		// project, like Claude's project instructions.
+		instructions: text().notNull().default(""),
+		userId: text()
+			.notNull()
+			.references(() => user.id, { onDelete: "cascade" }),
+		// Same semantics as chat.organizationId: null means the default
+		// "Chat plan" context.
+		organizationId: text().references(() => organization.id, {
+			onDelete: "set null",
+		}),
+	},
+	(table) => [index("chat_project_user_id_idx").on(table.userId)],
+);
+
+export const chatProjectFile = pgTable(
+	"chat_project_file",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		projectId: text()
+			.notNull()
+			.references(() => chatProject.id, { onDelete: "cascade" }),
+		name: text().notNull(),
+		mimeType: text().notNull(),
+		size: integer().notNull(),
+		// Full extracted text content of the file, kept for viewing and
+		// re-indexing. Chunked copies live in chat_project_file_chunk.
+		content: text().notNull(),
+		status: text({
+			enum: ["processing", "ready", "error"],
+		})
+			.notNull()
+			.default("processing"),
+		error: text(),
+		chunkCount: integer().notNull().default(0),
+	},
+	(table) => [index("chat_project_file_project_id_idx").on(table.projectId)],
+);
+
+export const chatProjectFileChunk = pgTable(
+	"chat_project_file_chunk",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		fileId: text()
+			.notNull()
+			.references(() => chatProjectFile.id, { onDelete: "cascade" }),
+		// Denormalized so retrieval can load all of a project's chunks without
+		// joining through chat_project_file.
+		projectId: text()
+			.notNull()
+			.references(() => chatProject.id, { onDelete: "cascade" }),
+		chunkIndex: integer().notNull(),
+		content: text().notNull(),
+		embedding: jsonb().$type<number[]>().notNull(),
+	},
+	(table) => [
+		index("chat_project_file_chunk_file_id_idx").on(table.fileId),
+		index("chat_project_file_chunk_project_id_idx").on(table.projectId),
+	],
+);
+
+export const chatProjectMemory = pgTable(
+	"chat_project_memory",
+	{
+		id: text().primaryKey().$defaultFn(shortid),
+		createdAt: timestamp().notNull().defaultNow(),
+		updatedAt: timestamp()
+			.notNull()
+			.defaultNow()
+			.$onUpdate(() => new Date()),
+		projectId: text()
+			.notNull()
+			.references(() => chatProject.id, { onDelete: "cascade" }),
+		content: text().notNull(),
+		// "manual" = added by the user on the project page; "auto" = extracted
+		// from a chat exchange by the memory extraction model.
+		source: text({
+			enum: ["manual", "auto"],
+		})
+			.notNull()
+			.default("manual"),
+	},
+	(table) => [index("chat_project_memory_project_id_idx").on(table.projectId)],
+);
+
 export const chat = pgTable(
 	"chat",
 	{
@@ -1686,8 +2181,15 @@ export const chat = pgTable(
 		parentChatId: text().references((): AnyPgColumn => chat.id, {
 			onDelete: "cascade",
 		}),
+		// Chat project (knowledge base) this chat belongs to, if any.
+		projectId: text().references(() => chatProject.id, {
+			onDelete: "set null",
+		}),
 	},
-	(table) => [index("chat_user_id_idx").on(table.userId)],
+	(table) => [
+		index("chat_user_id_idx").on(table.userId),
+		index("chat_project_id_idx").on(table.projectId),
+	],
 );
 
 export const chatShare = pgTable(
@@ -2253,6 +2755,8 @@ export const auditLogActions = [
 	"organization.update",
 	"organization.delete",
 	"organization.block",
+	"organization.manage",
+	"organization.sso_auto_join.update",
 	// Project
 	"project.create",
 	"project.update",
@@ -2260,7 +2764,12 @@ export const auditLogActions = [
 	// Team
 	"team_member.add",
 	"team_member.update",
+	"team_member.budget_update",
 	"team_member.remove",
+	"team_member.invite",
+	"team_member.invite_accept",
+	"team_member.invite_revoke",
+	"team_member.auto_join",
 	// API Key
 	"api_key.create",
 	"api_key.roll",
@@ -2294,6 +2803,7 @@ export const auditLogActions = [
 	"payment.credit_topup",
 	"payment.auto_topup.update",
 	"payment.auto_topup.disable",
+	"payment.self_refund",
 	// Credits
 	"credits.gift",
 	// Referral
@@ -2303,6 +2813,7 @@ export const auditLogActions = [
 	"dev_plan.cancel",
 	"dev_plan.resume",
 	"dev_plan.change_tier",
+	"dev_plan.cancel_downgrade",
 	"dev_plan.update_settings",
 	"dev_plan.update_billing_details",
 	"dev_plan.rotate_api_key",
@@ -2312,12 +2823,34 @@ export const auditLogActions = [
 	"chat_plan.cancel",
 	"chat_plan.resume",
 	"chat_plan.change_tier",
+	// SSO
+	"sso_provider.create",
+	"sso_provider.update",
+	"sso_provider.delete",
+	"sso_role_mapping.create",
+	"sso_role_mapping.delete",
+	"sso_default_projects.update",
+	"sso.sign_in",
+	// SCIM
+	"scim_token.create",
+	"scim_token.revoke",
+	// SCIM directory sync (IdP-initiated)
+	"scim.user.provision",
+	"scim.user.update",
+	"scim.user.activate",
+	"scim.user.deactivate",
+	"scim.user.deprovision",
+	"scim.user.role_change",
+	"scim.group.create",
+	"scim.group.update",
+	"scim.group.delete",
 ] as const;
 
 export const auditLogResourceTypes = [
 	"organization",
 	"project",
 	"team_member",
+	"team_invite",
 	"api_key",
 	"master_key",
 	"iam_rule",
@@ -2328,6 +2861,13 @@ export const auditLogResourceTypes = [
 	"payment",
 	"dev_plan",
 	"chat_plan",
+	"sso_provider",
+	"sso_role_mapping",
+	"sso_default_project",
+	"sso_session",
+	"scim_token",
+	"scim_user",
+	"scim_group",
 ] as const;
 
 export type AuditLogAction = (typeof auditLogActions)[number];
