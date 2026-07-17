@@ -56,6 +56,20 @@ export function hashSessionCacheKey(sessionId: string): string {
 }
 
 /**
+ * Hash a caller-supplied `prompt_cache_key` before forwarding it upstream.
+ * OpenAI, Azure, and Meta cap the field at 64 characters and reject anything
+ * longer with a 400 (`string_above_max_length`). Rather than only clamping
+ * over-length keys, always hash to a stable 32-char digest: every upstream
+ * cache key the gateway sends (this, the session-id hash, the conversation
+ * prefix hash) is then a uniform 32-char value, and raw caller values are never
+ * exposed to providers. Keyed and domain-separated exactly like
+ * `hashSessionCacheKey`, so cache routing stays stable per key.
+ */
+export function hashPromptCacheKey(key: string): string {
+	return hashSessionCacheKey(key);
+}
+
+/**
  * Meta only routes prompt-cache lookups by `prompt_cache_key`: identical
  * prefixes sent without a key land on different backends and report
  * `cached_tokens: 0` every time (verified live), while the same requests with
@@ -1710,7 +1724,9 @@ export async function prepareRequestBody(
 					usedProvider === "meta"
 				) {
 					const upstreamCacheKey =
-						prompt_cache_key ??
+						(prompt_cache_key !== undefined
+							? hashPromptCacheKey(prompt_cache_key)
+							: undefined) ??
 						(session_id !== undefined
 							? hashSessionCacheKey(session_id)
 							: undefined) ??
@@ -1808,7 +1824,9 @@ export async function prepareRequestBody(
 					// may hit a legacy deployment-based api-version that rejects
 					// unknown body fields, and the deployment type isn't known here.
 					const upstreamCacheKey =
-						prompt_cache_key ??
+						(prompt_cache_key !== undefined
+							? hashPromptCacheKey(prompt_cache_key)
+							: undefined) ??
 						(session_id !== undefined
 							? hashSessionCacheKey(session_id)
 							: undefined);

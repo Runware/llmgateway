@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import {
+	hashPromptCacheKey,
 	hashSessionCacheKey,
 	prepareRequestBody,
 	RequestError,
@@ -543,7 +544,7 @@ describe("prepareRequestBody - OpenAI prompt caching", () => {
 			promptCacheRetention: "24h",
 		})) as any;
 
-		expect(requestBody.prompt_cache_key).toBe("tenant-a");
+		expect(requestBody.prompt_cache_key).toBe(hashPromptCacheKey("tenant-a"));
 		expect(requestBody.prompt_cache_retention).toBe("24h");
 	});
 
@@ -554,7 +555,7 @@ describe("prepareRequestBody - OpenAI prompt caching", () => {
 			promptCacheRetention: "in_memory",
 		})) as any;
 
-		expect(requestBody.prompt_cache_key).toBe("tenant-a");
+		expect(requestBody.prompt_cache_key).toBe(hashPromptCacheKey("tenant-a"));
 		expect(requestBody.prompt_cache_retention).toBe("in_memory");
 	});
 
@@ -612,7 +613,7 @@ describe("prepareRequestBody - OpenAI prompt caching", () => {
 			promptCacheRetention: "24h",
 		})) as any;
 
-		expect(requestBody.prompt_cache_key).toBe("tenant-a");
+		expect(requestBody.prompt_cache_key).toBe(hashPromptCacheKey("tenant-a"));
 		expect(requestBody.prompt_cache_retention).toBeUndefined();
 	});
 
@@ -4509,7 +4510,9 @@ describe("prepareRequestBody - upstream prompt_cache_key", () => {
 			{ promptCacheKey: "caller-session-key", sessionId: "sess-123" },
 		);
 
-		expect(requestBody.prompt_cache_key).toBe("caller-session-key");
+		expect(requestBody.prompt_cache_key).toBe(
+			hashPromptCacheKey("caller-session-key"),
+		);
 	});
 
 	test("meta: session id beats the conversation-derived key and is hashed", async () => {
@@ -4619,6 +4622,43 @@ describe("prepareRequestBody - upstream prompt_cache_key", () => {
 		expect(a).not.toBe(hashSessionCacheKey("sess-2"));
 		expect(a).toHaveLength(32);
 		expect(a).not.toContain("sess-1");
+	});
+
+	test("hashPromptCacheKey always hashes to a stable 32-char digest", () => {
+		expect(hashPromptCacheKey("tenant-a")).toHaveLength(32);
+		expect(hashPromptCacheKey("tenant-a")).toBe(hashPromptCacheKey("tenant-a"));
+		expect(hashPromptCacheKey("tenant-a")).not.toBe(
+			hashPromptCacheKey("tenant-b"),
+		);
+		expect(hashPromptCacheKey("tenant-a")).not.toContain("tenant-a");
+	});
+
+	test("openai chat completions: hashes the caller key within the 64-char limit", async () => {
+		const requestBody = await prepareCacheKeyRequest(
+			"openai",
+			"gpt-4o-mini",
+			conversation,
+			{ promptCacheKey: "z".repeat(72) },
+		);
+
+		expect(requestBody.prompt_cache_key).toBe(
+			hashPromptCacheKey("z".repeat(72)),
+		);
+		expect(requestBody.prompt_cache_key?.length).toBeLessThanOrEqual(64);
+	});
+
+	test("openai responses API: hashes the caller key within the 64-char limit", async () => {
+		const requestBody = await prepareCacheKeyRequest(
+			"openai",
+			"gpt-5-mini",
+			conversation,
+			{ promptCacheKey: "z".repeat(72) },
+		);
+
+		expect(requestBody.prompt_cache_key).toBe(
+			hashPromptCacheKey("z".repeat(72)),
+		);
+		expect(requestBody.prompt_cache_key?.length).toBeLessThanOrEqual(64);
 	});
 });
 
