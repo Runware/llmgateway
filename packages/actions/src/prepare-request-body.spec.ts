@@ -1116,9 +1116,19 @@ describe("prepareRequestBody - Alibaba thinking", () => {
 		expect(requestBody.max_tokens).toBe(100);
 	});
 
-	test("sends nothing for mappings without budget-controlled thinking", async () => {
+	test("sends enable_thinking and thinking_budget for kimi-k2.5 (budget-controlled thinking)", async () => {
 		const requestBody = await prepare({
 			model: "kimi-k2.5",
+			reasoningEffort: "high",
+		});
+		expect(requestBody.enable_thinking).toBe(true);
+		expect(requestBody.thinking_budget).toBe(24576);
+		expect(requestBody.reasoning_effort).toBeUndefined();
+	});
+
+	test("sends nothing for mappings without budget-controlled thinking", async () => {
+		const requestBody = await prepare({
+			model: "glm-5",
 			reasoningEffort: "high",
 		});
 		expect(requestBody.enable_thinking).toBeUndefined();
