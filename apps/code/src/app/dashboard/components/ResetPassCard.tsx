@@ -1,11 +1,14 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { Loader2, Stamp } from "lucide-react";
+import { ArrowUpRight, Loader2, Plane, Stamp } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
+import Link from "next/link";
+import { usePostHog } from "posthog-js/react";
 import { useState } from "react";
 import { toast } from "sonner";
 
+import { plans } from "@/app/dashboard/plans";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -18,7 +21,14 @@ import {
 	AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { useAppConfig } from "@/lib/config";
 import { useApi } from "@/lib/fetch-client";
+
+import {
+	DEV_PLAN_RESET_PASS_PURCHASE_MAX_CYCLE_USAGE,
+	DEV_PLAN_RESET_PASS_REDEEM_MAX_CYCLE_USAGE,
+	getDevPlanCycleUsageFraction,
+} from "@llmgateway/shared";
 
 interface ResetPassCardProps {
 	tier: string;
@@ -29,6 +39,8 @@ interface ResetPassCardProps {
 	price: number | null;
 	premiumCreditsUsed: number;
 	premiumWeeklyLimit: number;
+	cycleCreditsUsed: number;
+	cycleCreditsLimit: number;
 }
 
 // A single visa-stamp slot in the pass strip. Held passes render as inked
@@ -95,14 +107,43 @@ export default function ResetPassCard({
 	price,
 	premiumCreditsUsed,
 	premiumWeeklyLimit,
+	cycleCreditsUsed,
+	cycleCreditsLimit,
 }: ResetPassCardProps) {
 	const api = useApi();
 	const queryClient = useQueryClient();
+	const { uiUrl, posthogKey } = useAppConfig();
+	const posthog = usePostHog();
 	const [justStamped, setJustStamped] = useState(false);
 
 	const available = includedRemaining + purchased;
 	const nothingToReset = premiumCreditsUsed <= 0;
+	// Mirrors the server-side gates: near the end of the monthly credit pool a
+	// pass restores a cap there's nothing left to spend against, so buying is
+	// blocked above 95% cycle usage and redeeming above 90%.
+	const cycleUsage = getDevPlanCycleUsageFraction(
+		cycleCreditsUsed,
+		cycleCreditsLimit,
+	);
+	const purchaseBlocked =
+		cycleUsage > DEV_PLAN_RESET_PASS_PURCHASE_MAX_CYCLE_USAGE;
+	const redeemBlocked = cycleUsage > DEV_PLAN_RESET_PASS_REDEEM_MAX_CYCLE_USAGE;
 	const serial = (organizationId ?? "GATEWAY").slice(-6).toUpperCase();
+
+	// Once the gates kick in, passes are a dead end for the rest of the cycle —
+	// give the user the action that actually helps instead: a tier upgrade
+	// (fresh cycle, full allowance, immediately) or PAYG credits on the top
+	// tier, mirroring the promo shown at full exhaustion.
+	const currentIndex = plans.findIndex((p) => p.tier === tier);
+	const nextPlan = currentIndex >= 0 ? (plans[currentIndex + 1] ?? null) : null;
+	const trackGateUpgradeClick = () => {
+		if (posthogKey) {
+			posthog.capture("devpass_reset_gate_upgrade_clicked", {
+				tier,
+				promo: nextPlan ? "upgrade" : "payg",
+			});
+		}
+	};
 
 	const invalidateStatus = () =>
 		queryClient.invalidateQueries({
@@ -212,14 +253,19 @@ export default function ResetPassCard({
 							size="sm"
 							onClick={() => redeemMutation.mutate({})}
 							disabled={
-								available === 0 || nothingToReset || redeemMutation.isPending
+								available === 0 ||
+								nothingToReset ||
+								redeemBlocked ||
+								redeemMutation.isPending
 							}
 							title={
-								available === 0
-									? "No passes held — buy one below"
-									: nothingToReset
-										? "Nothing to reset yet — your allowance is untouched"
-										: undefined
+								redeemBlocked
+									? "Over 90% of this cycle's credits are used — a reset would give you almost nothing. Your passes keep until your credits renew."
+									: available === 0
+										? "No passes held — buy one below"
+										: nothingToReset
+											? "Nothing to reset yet — your allowance is untouched"
+											: undefined
 							}
 						>
 							{redeemMutation.isPending ? (
@@ -229,12 +275,24 @@ export default function ResetPassCard({
 							)}
 							Use a pass
 						</Button>
-						{price !== null && (
+						{price !== null && purchaseBlocked && (
+							<Button
+								size="sm"
+								variant="outline"
+								disabled
+								title="Over 95% of this cycle's credits are used — a pass would give you almost nothing to use. Buy one again when your credits renew."
+							>
+								Buy a pass · ${price}
+							</Button>
+						)}
+						{price !== null && !purchaseBlocked && (
 							<AlertDialog>
 								<AlertDialogTrigger asChild>
 									<Button
 										size="sm"
-										variant={available === 0 ? "default" : "outline"}
+										variant={
+											available === 0 && !redeemBlocked ? "default" : "outline"
+										}
 										disabled={purchaseMutation.isPending}
 									>
 										{purchaseMutation.isPending ? (
@@ -266,7 +324,44 @@ export default function ResetPassCard({
 								</AlertDialogContent>
 							</AlertDialog>
 						)}
+						{redeemBlocked &&
+							(nextPlan ? (
+								<Button size="sm" asChild onClick={trackGateUpgradeClick}>
+									<Link href="/dashboard/billing">
+										<Plane className="mr-1.5 h-4 w-4" />
+										Upgrade to {nextPlan.name} · ${nextPlan.price}/mo
+									</Link>
+								</Button>
+							) : (
+								<Button size="sm" asChild onClick={trackGateUpgradeClick}>
+									<a
+										href={`${uiUrl}/dashboard?from=devpass-payg`}
+										target="_blank"
+										rel="noopener noreferrer"
+									>
+										Get PAYG credits on llmgateway.io
+										<ArrowUpRight className="ml-1.5 h-4 w-4" />
+									</a>
+								</Button>
+							))}
 					</div>
+					{redeemBlocked && (
+						<p className="mt-2.5 max-w-md text-xs text-muted-foreground">
+							Over 90% of this cycle&apos;s credits are used, so passes are on
+							hold until your credits renew.{" "}
+							{nextPlan ? (
+								<>
+									Upgrading to {nextPlan.name} starts a fresh cycle instantly
+									with a {`$${nextPlan.usage} `}monthly allowance.
+								</>
+							) : (
+								<>
+									Pay-as-you-go credits on LLM Gateway work with the same coding
+									agents — just swap your API key.
+								</>
+							)}
+						</p>
+					)}
 				</div>
 
 				<div className="flex items-center gap-2">
