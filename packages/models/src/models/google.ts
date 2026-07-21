@@ -442,6 +442,7 @@ export const googleModels = [
 				contextSize: 1048576,
 				maxOutput: 65535,
 				reasoning: true,
+				reasoningEfforts: ["low", "medium", "high"],
 				reasoningMaxTokens: true,
 				streaming: true,
 				vision: true,
@@ -1020,8 +1021,10 @@ export const googleModels = [
 				vision: true,
 				tools: false,
 				reasoning: true,
+				reasoningEfforts: ["minimal", "high"],
 				reasoningMaxTokens: true,
-				jsonOutput: true,
+				// upstream rejects responseMimeType application/json (400)
+				jsonOutput: false,
 				jsonOutputSchema: false,
 			},
 			{
@@ -1046,7 +1049,11 @@ export const googleModels = [
 				tools: false,
 				reasoning: true,
 				reasoningMaxTokens: true,
-				jsonOutput: true,
+				// Vertex serves this model with HIGH thinking only; other thinking
+				// levels are rejected with a 400
+				reasoningEfforts: ["none", "high"],
+				// upstream rejects responseMimeType application/json (400)
+				jsonOutput: false,
 				jsonOutputSchema: false,
 			},
 		],
@@ -1074,6 +1081,7 @@ export const googleModels = [
 				contextSize: 1048576,
 				maxOutput: 65536,
 				reasoning: true,
+				reasoningEfforts: ["minimal", "low", "medium", "high"],
 				reasoningMaxTokens: true,
 				streaming: true,
 				vision: true,
@@ -1083,6 +1091,10 @@ export const googleModels = [
 				webSearch: true,
 				jsonOutput: true,
 				jsonOutputSchema: true,
+				// AI Studio's json_object mode emits a stray trailing brace (and
+				// sometimes prose) after the JSON — Vertex is unaffected
+				// (verified live 2026-07-14)
+				healStreamingJsonOutput: true,
 			},
 			{
 				providerId: "runware",
@@ -1404,6 +1416,7 @@ export const googleModels = [
 				contextSize: 1048576,
 				maxOutput: 65535,
 				reasoning: true,
+				reasoningEfforts: ["minimal", "low", "medium", "high"],
 				reasoningMaxTokens: true,
 				streaming: true,
 				vision: true,
@@ -2432,6 +2445,63 @@ export const googleModels = [
 			{
 				providerId: "google-ai-studio",
 				externalId: "gemini-2.5-pro-preview-tts",
+				inputPrice: "1.0e-6",
+				outputPrice: "20.0e-6",
+				outputAudioPrice: "20.0e-6",
+				requestPrice: "0",
+				contextSize: 8000,
+				maxOutput: 16000,
+				streaming: false,
+				tools: false,
+				jsonOutput: false,
+				speechGenerations: true,
+				supportedVoices: GEMINI_TTS_VOICES,
+			},
+			{
+				providerId: "google-vertex",
+				// GA model id on Vertex AI (the preview id is AI-Studio-only).
+				externalId: "gemini-2.5-pro-tts",
+				inputPrice: "1.0e-6",
+				outputPrice: "20.0e-6",
+				outputAudioPrice: "20.0e-6",
+				requestPrice: "0",
+				contextSize: 8000,
+				maxOutput: 16000,
+				streaming: false,
+				tools: false,
+				jsonOutput: false,
+				speechGenerations: true,
+				supportedVoices: GEMINI_TTS_VOICES,
+			},
+		],
+	},
+	{
+		id: "gemini-3.1-flash-tts-preview",
+		name: "Gemini 3.1 Flash TTS Preview",
+		description:
+			"Gemini 3.1 Flash text-to-speech model. Generates low-latency, prompt-steerable audio from text via the /v1/audio/speech endpoint.",
+		family: "google",
+		output: ["audio"],
+		releasedAt: new Date("2026-04-15"),
+		providers: [
+			{
+				providerId: "google-ai-studio",
+				externalId: "gemini-3.1-flash-tts-preview",
+				inputPrice: "1.0e-6",
+				outputPrice: "20.0e-6",
+				outputAudioPrice: "20.0e-6",
+				requestPrice: "0",
+				contextSize: 8000,
+				maxOutput: 16000,
+				streaming: false,
+				tools: false,
+				jsonOutput: false,
+				speechGenerations: true,
+				supportedVoices: GEMINI_TTS_VOICES,
+			},
+			{
+				providerId: "google-vertex",
+				externalId: "gemini-3.1-flash-tts-preview",
 				inputPrice: "1.0e-6",
 				outputPrice: "20.0e-6",
 				outputAudioPrice: "20.0e-6",
